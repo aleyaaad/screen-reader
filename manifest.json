@@ -6,7 +6,6 @@
 
   "action": {
     "default_popup": "popup.html",
-    "default_icon": "logo.png",
     "default_title": "Screen Reader Assistant"
   },
 
@@ -17,9 +16,6 @@
     }
   ],
 
-  "icons": {
-    "128": "logo.png"
-  },
 
   "background": {
     "service_worker": "background.js"
