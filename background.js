@@ -1,6 +1,8 @@
 // background.js (mv3 service worker)
 
 const DETR_API_KEY = "Bearer YOUR_HF_TOKEN_HERE";
+console.log("hf auth header prefix:", DETR_API_KEY.slice(0, 18));
+
 
 // ✅ NEW HF ROUTER ENDPOINT (old api-inference is retired)
 const DETR_API_URL =
