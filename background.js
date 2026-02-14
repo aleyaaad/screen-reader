@@ -1,3 +1,6 @@
+
+console.log("BACKGROUND RUNNING - OPTIONS TOKEN VERSION - feb14");
+
 // background.js (manifest v3 service worker)
 
 const BLIP_URL =
