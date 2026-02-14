@@ -23,5 +23,5 @@
 
   "permissions": ["activeTab", "scripting", "tabs"],
 
-  "host_permissions": ["https://*/*"]
+  "host_permissions": ["<all_urls>"]
 }
