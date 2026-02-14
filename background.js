@@ -1,45 +1,56 @@
-// background.js (mv3 service worker)
+// background.js (MV3 service worker)
 
-const DETR_API_KEY = "Bearer YOUR_HF_TOKEN_HERE";
-console.log("hf auth header prefix:", DETR_API_KEY.slice(0, 18));
+console.log("BACKGROUND RUNNING - DETR VERSION - feb14");
 
-
-// ✅ NEW HF ROUTER ENDPOINT (old api-inference is retired)
+const DETR_API_KEY = "Bearer hf_YOUR_NEW_TOKEN_HERE";
 const DETR_API_URL =
   "https://router.huggingface.co/hf-inference/models/facebook/detr-resnet-50";
-
-console.log("screen_reader background service worker started");
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     try {
       if (msg?.type !== "CAPTURE_SCREEN") return;
 
+      console.log("background got message:", msg);
+
       const tabId = sender?.tab?.id;
       const windowId = sender?.tab?.windowId;
 
       if (!tabId || windowId == null) {
-        sendResponse({ ok: false, error: "no active tab info found" });
-        return;
+        throw new Error("No active tab info found.");
       }
 
       await safeSend(tabId, { type: "SHOW_SCANNING", message: "scanning screen…" });
 
-      const dataUrl = await chrome.tabs.captureVisibleTab(windowId, { format: "png" });
-      if (!dataUrl) throw new Error("captureVisibleTab returned empty dataUrl");
+      const dataUrl = await chrome.tabs.captureVisibleTab(windowId, {
+        format: "png"
+      });
+
+      if (!dataUrl) throw new Error("Screenshot capture failed.");
 
       const detections = await runDetr(dataUrl);
 
       await safeSend(tabId, { type: "HIDE_SCANNING" });
-      await safeSend(tabId, { type: "DETR_RESULT", detections });
+
+      await safeSend(tabId, {
+        type: "DETR_RESULT",
+        detections
+      });
 
       sendResponse({ ok: true, detections });
     } catch (err) {
+      console.error("background error:", err);
+
       const tabId = sender?.tab?.id;
+
       if (tabId) {
         await safeSend(tabId, { type: "HIDE_SCANNING" });
-        await safeSend(tabId, { type: "ERROR", error: String(err?.message || err) });
+        await safeSend(tabId, {
+          type: "ERROR",
+          error: String(err?.message || err)
+        });
       }
+
       sendResponse({ ok: false, error: String(err?.message || err) });
     }
   })();
@@ -47,47 +58,35 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   return true;
 });
 
-// retry for router/HF model warmup responses
 async function runDetr(dataUrl) {
   const base64 = dataUrl.split(",")[1];
 
-  for (let attempt = 1; attempt <= 4; attempt++) {
-    const resp = await fetch(DETR_API_URL, {
-      method: "POST",
-      headers: {
-        Authorization: DETR_API_KEY,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ inputs: base64 })
-    });
+  console.log("auth header prefix:", DETR_API_KEY.slice(0, 18));
 
-    if (resp.ok) {
-      const json = await resp.json();
-      return Array.isArray(json) ? json : [];
-    }
+  const resp = await fetch(DETR_API_URL, {
+    method: "POST",
+    headers: {
+      Authorization: DETR_API_KEY,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ inputs: base64 })
+  });
 
-    const text = await resp.text().catch(() => "");
-    let parsed = null;
-    try { parsed = JSON.parse(text); } catch (_) {}
+  const text = await resp.text();
 
-    // common warmup case
-    if (resp.status === 503 && parsed?.estimated_time) {
-      const waitMs = Math.ceil(parsed.estimated_time * 1000) + 300;
-      console.log(`HF model loading, waiting ${waitMs}ms (attempt ${attempt})`);
-      await new Promise((r) => setTimeout(r, waitMs));
-      continue;
-    }
-
+  if (!resp.ok) {
     throw new Error(`detr failed: ${resp.status} ${text}`);
   }
 
-  throw new Error("detr failed: retry limit hit");
+  const json = JSON.parse(text);
+
+  return Array.isArray(json) ? json : [];
 }
 
 async function safeSend(tabId, message) {
   try {
     await chrome.tabs.sendMessage(tabId, message);
   } catch (e) {
-    // content script not available on restricted pages
+    console.warn("safeSend failed:", e.message);
   }
 }
