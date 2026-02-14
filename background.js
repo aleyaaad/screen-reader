@@ -50,12 +50,16 @@ function detectionsToSentence(detections) {
   return `on screen i detect ${parts.join(", ")}.`;
 }
 
-// send screenshot to DETR and return description
-async function askDetrToDescribe(dataUrl) {
+// send screenshot to DETR and return detections + sentence
+async function askDetr(dataUrl) {
   try {
     const hfToken = await getHfToken();
     if (!hfToken) {
-      return "no huggingface token saved. open extension options and add one.";
+      return {
+        ok: false,
+        detections: [],
+        description: "no huggingface token saved. open extension options and add one.",
+      };
     }
 
     const blob = await dataUrlToBlob(dataUrl);
@@ -76,20 +80,44 @@ async function askDetrToDescribe(dataUrl) {
     try {
       result = JSON.parse(rawText);
     } catch {
-      return "detr returned a non-json response.";
+      return {
+        ok: false,
+        detections: [],
+        description: "detr returned a non-json response.",
+      };
     }
 
     if (!response.ok) {
       const msg = result?.error || `http ${response.status}`;
-      return `detr failed: ${msg}`;
+      return {
+        ok: false,
+        detections: [],
+        description: `detr failed: ${msg}`,
+      };
     }
 
-    // success shape for object detection is usually an array of detections:
-    // [{ score: 0.98, label: "person", box: {xmin, ymin, xmax, ymax}}, ...]
-    return detectionsToSentence(result);
+    // success shape: array of detections
+    const detections = Array.isArray(result) ? result : [];
+    const description = detectionsToSentence(detections);
+
+    return { ok: true, detections, description };
   } catch (err) {
-    console.error("askDetrToDescribe crashed:", err);
-    return `detr failed: ${err?.message || err}`;
+    console.error("askDetr crashed:", err);
+    return {
+      ok: false,
+      detections: [],
+      description: `detr failed: ${err?.message || err}`,
+    };
+  }
+}
+
+// helper: send result to content script so user sees it immediately
+async function sendResultToTab(tabId, payload) {
+  try {
+    await chrome.tabs.sendMessage(tabId, payload);
+  } catch (err) {
+    // this usually happens if the page doesn't have your content script injected yet
+    console.warn("couldn't send message to content script:", err);
   }
 }
 
@@ -104,14 +132,46 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       console.log("captureVisibleTab ran. has dataUrl:", !!dataUrl);
 
       if (!dataUrl) {
+        const payload = {
+          type: "DETR_RESULT",
+          ok: false,
+          detections: [],
+          description: "failed to capture screenshot.",
+        };
+
+        // try to show user immediately
+        if (sender?.tab?.id) await sendResultToTab(sender.tab.id, payload);
+
         sendResponse({ ok: false, description: "failed to capture screenshot." });
         return;
       }
 
-      const description = await askDetrToDescribe(dataUrl);
-      sendResponse({ ok: true, description });
+      const detr = await askDetr(dataUrl);
+
+      const payload = {
+        type: "DETR_RESULT",
+        ok: detr.ok,
+        detections: detr.detections,
+        description: detr.description,
+      };
+
+      //  show the user immediately (send to content script)
+      if (sender?.tab?.id) await sendResultToTab(sender.tab.id, payload);
+
+      // keep your existing response behavior too
+      sendResponse({ ok: detr.ok, description: detr.description });
     } catch (err) {
       console.error("capture/describe failed:", err);
+
+      const payload = {
+        type: "DETR_RESULT",
+        ok: false,
+        detections: [],
+        description: "error capturing or describing screen.",
+      };
+
+      if (sender?.tab?.id) await sendResultToTab(sender.tab.id, payload);
+
       sendResponse({
         ok: false,
         description: "error capturing or describing screen.",
