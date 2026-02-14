@@ -1,22 +1,31 @@
 {
-    "manifest_version": 3,
-    "name": "screen_reader",
-    "version": "0.01",
-    "author": "Aleysa, Alora, Kayla",
-    "description": "A browser extension that detects user interactions and provides spoken descriptions of on-screen content.",
+  "manifest_version": 3,
+  "name": "screen_reader",
+  "version": "0.0.1",
+  "author": "Aleysa, Alora, Kayla",
 
-
-
-
-"action" : 
-{
+  "action": {
     "default_popup": "popup.html",
     "default_icon": "logo.png",
     "default_title": "Screen Reader Assistant"
-},
-"content_scripts": [
+  },
+
+  "content_scripts": [
     {
       "matches": ["<all_urls>"],
       "js": ["contentscript.js"]
     }
+  ],
+
+  "icons": {
+    "128": "logo.png"
+  },
+
+  "background": {
+    "service_worker": "background.js"
+  },
+
+  "permissions": ["activeTab"],
+
+  "host_permissions": ["https://*/*"]
 }
