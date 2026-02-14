@@ -1,3 +1,5 @@
+console.log("### NEW CONTENTSCRIPT VERSION feb14 scanner ###", Date.now());
+
 // contentscript.js
 
 console.log("screen_reader contentscript loaded");
