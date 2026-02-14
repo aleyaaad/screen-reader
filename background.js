@@ -1,4 +1,3 @@
-
 console.log("BACKGROUND RUNNING - OPTIONS TOKEN VERSION - feb14");
 
 // background.js (manifest v3 service worker)
@@ -9,7 +8,7 @@ const BLIP_URL =
 // get token from chrome storage
 async function getHfToken() {
   const { hfToken } = await chrome.storage.local.get(["hfToken"]);
-  return hfToken; // should look like "hf_xxxxx"
+  return (hfToken || "").trim(); // should look like "hf_xxxxx"
 }
 
 // convert screenshot dataURL -> Blob (service worker safe)
@@ -22,6 +21,7 @@ async function dataUrlToBlob(dataUrl) {
 async function askBlipToDescribe(dataUrl) {
   try {
     const hfToken = await getHfToken();
+    console.log("hf token exists?", !!hfToken);
 
     if (!hfToken) {
       return "no huggingface token saved. open extension options and add one.";
@@ -70,9 +70,13 @@ async function askBlipToDescribe(dataUrl) {
 
 // listen for content script messages
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  console.log("background got message:", request);
+
   if (request?.type !== "CAPTURE_SCREEN") return;
 
   chrome.tabs.captureVisibleTab(null, { format: "png" }, async (dataUrl) => {
+    console.log("captureVisibleTab ran. has dataUrl:", !!dataUrl);
+
     try {
       if (!dataUrl) {
         sendResponse({ ok: false, description: "failed to capture screenshot." });
