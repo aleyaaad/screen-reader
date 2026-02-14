@@ -1,4 +1,6 @@
 //tells you when/if the content script loads
+console.log("Content script loaded!");
+//variable for counting clicks
 let clickCount = 0;
 //resets clickCount if user doesn'y click fast enough
 let clickTimer = null;
