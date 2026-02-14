@@ -2,12 +2,14 @@
   "manifest_version": 3,
   "name": "screen_reader",
   "version": "0.0.1",
-  "author": "Aleysa, Alora, Kayla",
+  "author": "Aleysa",
 
   "action": {
     "default_popup": "popup.html",
     "default_title": "Screen Reader Assistant"
   },
+
+  "options_page": "options.html",
 
   "content_scripts": [
     {
@@ -23,8 +25,7 @@
 
   "permissions": ["activeTab", "scripting", "tabs"],
 
-  "host_permissions": ["<all_urls>"],
+  "host_permissions": ["<all_urls>"]
   
-  "options_page": "options.html"
 
 }
