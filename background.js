@@ -17,9 +17,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
          * 
          */
         chrome.tabs.captureVisibleTab(null, { format: "png" }, function(dataUrl) {
-                const img = new Image();
-                img.src = dataUrl;
-                document.body.appendChild(img);
+                //confirms ss and logs the ss data
+                console.log("Screenshot captured!");
+                console.log(dataUrl);
+
 
             //later - send dataurl to blip/another api to be described (current placeholder)
         });
