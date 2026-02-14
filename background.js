@@ -3,7 +3,7 @@ console.log("BACKGROUND RUNNING - OPTIONS TOKEN VERSION - feb14");
 // background.js (manifest v3 service worker)
 
 const BLIP_URL =
-  "https://api-inference.huggingface.co/models/Salesforce/blip-image-captioning-large";
+  "https://router.huggingface.co/hf-inference/models/Salesforce/blip-image-captioning-large";
 
 // get token from chrome storage
 async function getHfToken() {
@@ -33,6 +33,7 @@ async function askBlipToDescribe(dataUrl) {
       method: "POST",
       headers: {
         Authorization: `Bearer ${hfToken}`,
+        Accept: "application/json",
       },
       body: blob,
     });
@@ -45,7 +46,7 @@ async function askBlipToDescribe(dataUrl) {
     try {
       result = JSON.parse(rawText);
     } catch {
-      return "blip returned a non-json response.";
+      return `blip returned non-json (status ${response.status}).`;
     }
 
     if (!response.ok) {
@@ -94,5 +95,5 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
   });
 
-  return true; // IMPORTANT: keeps async response channel open
+  return true; // keeps async response channel open
 });
