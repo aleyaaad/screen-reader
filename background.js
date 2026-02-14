@@ -2,16 +2,13 @@ console.log("BACKGROUND RUNNING - DETR VERSION - feb14");
 
 // manifest v3 service worker
 
-// IMPORTANT:
-// hf-inference does NOT support BLIP image captioning, so we use DETR object detection instead.
-// this endpoint IS supported on hf-inference.
 const DETR_URL =
   "https://router.huggingface.co/hf-inference/models/facebook/detr-resnet-50";
 
 // get token from chrome storage (saved from your options page)
 async function getHfToken() {
   const { hfToken } = await chrome.storage.local.get(["hfToken"]);
-  return hfToken; // should look like "hf_xxxxx"
+  return hfToken; // "hf_xxxxx"
 }
 
 // convert screenshot dataURL -> Blob (service worker safe)
@@ -26,9 +23,8 @@ function detectionsToSentence(detections) {
     return "i couldn't detect any objects on screen.";
   }
 
-  // keep only decent-confidence detections
   const good = detections
-    .filter((d) => (d?.score ?? 0) >= 0.4 && d?.label)
+    .filter((d) => (d?.score ?? 0) >= 0.25 && d?.label) // lowered from 0.4
     .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
     .slice(0, 8);
 
@@ -36,7 +32,6 @@ function detectionsToSentence(detections) {
     return "i saw some shapes but nothing confident enough to name.";
   }
 
-  // count labels
   const counts = {};
   for (const d of good) {
     const label = d.label.toLowerCase();
@@ -96,7 +91,6 @@ async function askDetr(dataUrl) {
       };
     }
 
-    // success shape: array of detections
     const detections = Array.isArray(result) ? result : [];
     const description = detectionsToSentence(detections);
 
@@ -116,7 +110,6 @@ async function sendResultToTab(tabId, payload) {
   try {
     await chrome.tabs.sendMessage(tabId, payload);
   } catch (err) {
-    // this usually happens if the page doesn't have your content script injected yet
     console.warn("couldn't send message to content script:", err);
   }
 }
@@ -126,6 +119,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request?.type !== "CAPTURE_SCREEN") return;
 
   console.log("background got message:", request);
+
+  const tabId = sender?.tab?.id;
 
   chrome.tabs.captureVisibleTab(null, { format: "png" }, async (dataUrl) => {
     try {
@@ -137,11 +132,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           ok: false,
           detections: [],
           description: "failed to capture screenshot.",
+          screenshotDataUrl: null,
         };
 
-        // try to show user immediately
-        if (sender?.tab?.id) await sendResultToTab(sender.tab.id, payload);
-
+        if (tabId) await sendResultToTab(tabId, payload);
         sendResponse({ ok: false, description: "failed to capture screenshot." });
         return;
       }
@@ -153,12 +147,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         ok: detr.ok,
         detections: detr.detections,
         description: detr.description,
+        screenshotDataUrl: dataUrl, // ✅ send screenshot back for accurate scaling
       };
 
-      //  show the user immediately (send to content script)
-      if (sender?.tab?.id) await sendResultToTab(sender.tab.id, payload);
+      if (tabId) await sendResultToTab(tabId, payload);
 
-      // keep your existing response behavior too
+      // keep old behavior too
       sendResponse({ ok: detr.ok, description: detr.description });
     } catch (err) {
       console.error("capture/describe failed:", err);
@@ -168,9 +162,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         ok: false,
         detections: [],
         description: "error capturing or describing screen.",
+        screenshotDataUrl: null,
       };
 
-      if (sender?.tab?.id) await sendResultToTab(sender.tab.id, payload);
+      if (tabId) await sendResultToTab(tabId, payload);
 
       sendResponse({
         ok: false,
