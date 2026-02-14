@@ -1,34 +1,35 @@
-//tells you when/if the content script loads
-console.log("Content script loaded!");
-//variable for counting clicks
-let clickCount = 0;
-//resets clickCount if user doesn'y click fast enough
-let clickTimer = null;
+// tells you when/if the content script loads
+console.log("content script loaded!");
 
-/**
- * document.addEventListener("click", callback) tells the 
- * page to run this func whenever the user clicks anywhere
- * event reps the click
- * 
- * sets logic to reset clickCount after 
- * the 1st click if the user doesn't tap fast enough
- * 
- */
-document.addEventListener("click", function(event) {
-    clickCount++;
-
-    if (clickCount === 1) {
-        clickTimer = setTimeout(function() {
-            clickCount = 0;
-        }, 400);
+// use the browser's real double click event (less buggy than manual click counting)
+document.addEventListener("dblclick", () => {
+  chrome.runtime.sendMessage({ type: "CAPTURE_SCREEN" }, (res) => {
+    // this happens a lot during dev when you reload the extension
+    if (chrome.runtime.lastError) {
+      console.warn("extension reloaded. refresh the page:", chrome.runtime.lastError.message);
+      return;
     }
-//clicks reach 2 before 400ms = double click.
 
-    if (clickCount === 2) {
-        clearTimeout(clickTimer);
-        clickCount = 0;
+    console.log("response from background:", res);
 
-      //sends message to background.js to capture the screen once a double tap is detected
-        chrome.runtime.sendMessage({ type: "CAPTURE_SCREEN" });
-    }
+    const text = res?.description || "no description returned";
+
+    // quick on-screen toast so you can SEE it working
+    const box = document.createElement("div");
+    box.textContent = text;
+    box.style.position = "fixed";
+    box.style.bottom = "20px";
+    box.style.left = "20px";
+    box.style.zIndex = "999999";
+    box.style.padding = "12px 14px";
+    box.style.borderRadius = "10px";
+    box.style.background = "rgba(0,0,0,0.85)";
+    box.style.color = "white";
+    box.style.maxWidth = "420px";
+    box.style.fontSize = "14px";
+    box.style.lineHeight = "1.3";
+    document.body.appendChild(box);
+
+    setTimeout(() => box.remove(), 6000);
+  });
 });
