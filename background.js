@@ -1,8 +1,6 @@
 // background.js (mv3 service worker)
 
-// put your real hf token here (hackathon ok, production no)
 const DETR_API_KEY = "Bearer YOUR_HF_TOKEN_HERE";
-
 const DETR_API_URL =
   "https://api-inference.huggingface.co/models/facebook/detr-resnet-50";
 
@@ -19,99 +17,93 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const windowId = sender?.tab?.windowId;
 
       if (!tabId || windowId == null) {
-        console.error("no tab or window id available");
+        console.error("no active tab info found");
         sendResponse({ ok: false, error: "no active tab info found" });
         return;
       }
 
-      // tell content script to show scanning immediately
-      await safeSend(tabId, {
-        type: "SHOW_SCANNING",
-        message: "scanning screen…"
-      });
+      // show overlay (content script also shows it, but this is fine)
+      await safeSend(tabId, { type: "SHOW_SCANNING", message: "scanning screen…" });
 
       console.log("capturing visible tab...");
+      const dataUrl = await chrome.tabs.captureVisibleTab(windowId, { format: "png" });
 
-      const dataUrl = await chrome.tabs.captureVisibleTab(windowId, {
-        format: "png"
-      });
+      if (!dataUrl) throw new Error("captureVisibleTab returned empty dataUrl");
 
-      if (!dataUrl) {
-        throw new Error("captureVisibleTab returned empty dataUrl");
-      }
-
-      console.log("capture successful, running DETR...");
-
+      console.log("capture ok, calling DETR...");
       const detections = await runDetr(dataUrl);
 
-      console.log("DETR finished", detections);
+      console.log("DETR done, detections:", detections);
 
-      // always hide scanning
+      // hide overlay + send results
       await safeSend(tabId, { type: "HIDE_SCANNING" });
 
-      // send detections back
-      await safeSend(tabId, {
-        type: "DETECTIONS_RESULT",
-        detections
-      });
+      // IMPORTANT: use whichever your existing code expects
+      // your earlier console showed DETR_RESULT, so we send that
+      await safeSend(tabId, { type: "DETR_RESULT", detections });
 
       sendResponse({ ok: true, detections });
     } catch (err) {
       console.error("scan failed:", err);
 
       const tabId = sender?.tab?.id;
-
       if (tabId) {
         await safeSend(tabId, { type: "HIDE_SCANNING" });
-        await safeSend(tabId, {
-          type: "ERROR",
-          error: String(err?.message || err)
-        });
+        await safeSend(tabId, { type: "ERROR", error: String(err?.message || err) });
       }
 
-      sendResponse({
-        ok: false,
-        error: String(err?.message || err)
-      });
+      sendResponse({ ok: false, error: String(err?.message || err) });
     }
   })();
 
-  return true; // required for async response
+  return true;
 });
 
+// ============================
+// HF DETR call with "model loading" retry
+// ============================
 async function runDetr(dataUrl) {
   const base64 = dataUrl.split(",")[1];
 
-  const resp = await fetch(DETR_API_URL, {
-    method: "POST",
-    headers: {
-      Authorization: DETR_API_KEY,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      inputs: base64
-    })
-  });
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    const resp = await fetch(DETR_API_URL, {
+      method: "POST",
+      headers: {
+        Authorization: DETR_API_KEY,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ inputs: base64 })
+    });
 
-  if (!resp.ok) {
+    if (resp.ok) {
+      const json = await resp.json();
+      return Array.isArray(json) ? json : [];
+    }
+
     const text = await resp.text().catch(() => "");
+    let parsed = null;
+    try {
+      parsed = JSON.parse(text);
+    } catch (_) {}
+
+    // HF model loading case
+    if (resp.status === 503 && parsed?.estimated_time) {
+      const waitMs = Math.ceil(parsed.estimated_time * 1000) + 300;
+      console.log(`HF model loading, waiting ${waitMs}ms (attempt ${attempt})`);
+      await new Promise((r) => setTimeout(r, waitMs));
+      continue;
+    }
+
     throw new Error(`detr failed: ${resp.status} ${text}`);
   }
 
-  const json = await resp.json();
-
-  if (!Array.isArray(json)) {
-    console.warn("unexpected DETR response:", json);
-    return [];
-  }
-
-  return json;
+  throw new Error("detr failed: model kept loading / retry limit hit");
 }
 
 async function safeSend(tabId, message) {
   try {
     await chrome.tabs.sendMessage(tabId, message);
   } catch (e) {
-    console.warn("safeSend failed (likely not injected):", e.message);
+    console.warn("safeSend failed:", e.message);
   }
 }

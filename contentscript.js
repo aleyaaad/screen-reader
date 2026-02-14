@@ -1,7 +1,9 @@
-console.log("content script loaded!");
+// contentscript.js
+
+console.log("screen_reader contentscript loaded");
 
 // ============================
-// 1) tiny debug toast
+// tiny debug toast
 // ============================
 function toast(msg) {
   const t = document.createElement("div");
@@ -13,7 +15,7 @@ function toast(msg) {
 }
 
 // ============================
-// 2) scanner overlay (very visible)
+// scanner overlay (very visible)
 // ============================
 const SCAN_ID = "sr-scan-overlay";
 const STYLE_ID = "sr-scan-style";
@@ -67,37 +69,50 @@ function hideScan() {
 }
 
 // ============================
-// 3) dblclick trigger (only trigger)
+// dblclick trigger (ONLY trigger)
 // ============================
+let scanTimeoutId = null;
+
 document.addEventListener(
   "dblclick",
   () => {
     toast("dblclick ✅");
     showScan("scanning screen…");
 
-    // keep it visible for 2s no matter what (proof)
-    setTimeout(() => {
+    // fail-safe only if nothing returns
+    if (scanTimeoutId) clearTimeout(scanTimeoutId);
+    scanTimeoutId = setTimeout(() => {
       toast("scan overlay timeout ⏳");
       hideScan();
-    }, 2000);
+      scanTimeoutId = null;
+    }, 2500);
 
-    // send to background
     chrome.runtime.sendMessage({ type: "CAPTURE_SCREEN" }, (resp) => {
       if (chrome.runtime.lastError) {
-        console.error(chrome.runtime.lastError.message);
+        console.error("sendMessage lastError:", chrome.runtime.lastError.message);
         toast("sendMessage error ❌");
         hideScan();
+        if (scanTimeoutId) clearTimeout(scanTimeoutId);
+        scanTimeoutId = null;
         return;
       }
-      console.log("background resp:", resp);
+
+      // if background responds with ok:false, show why
+      if (resp?.ok === false) {
+        console.error("background error:", resp.error);
+        toast(`error: ${String(resp.error).slice(0, 40)}`);
+        hideScan();
+        if (scanTimeoutId) clearTimeout(scanTimeoutId);
+        scanTimeoutId = null;
+      }
     });
   },
   true
 );
 
 // ============================
-// 4) hide overlay when results arrive
-// (supports DETR_RESULT and DETECTIONS_RESULT)
+// receive messages from background
+// supports DETR_RESULT, DETECTIONS_RESULT, ERROR, HIDE_SCANNING
 // ============================
 chrome.runtime.onMessage.addListener((msg) => {
   console.log("content got message:", msg);
@@ -105,14 +120,21 @@ chrome.runtime.onMessage.addListener((msg) => {
   if (msg?.type === "DETR_RESULT" || msg?.type === "DETECTIONS_RESULT") {
     toast("results ✅");
     hideScan();
-  }
-
-  if (msg?.type === "ERROR") {
-    toast("error ❌");
-    hideScan();
+    if (scanTimeoutId) clearTimeout(scanTimeoutId);
+    scanTimeoutId = null;
   }
 
   if (msg?.type === "HIDE_SCANNING") {
     hideScan();
+    if (scanTimeoutId) clearTimeout(scanTimeoutId);
+    scanTimeoutId = null;
+  }
+
+  if (msg?.type === "ERROR") {
+    console.error("scan error:", msg.error);
+    toast(`error: ${String(msg.error).slice(0, 40)}`);
+    hideScan();
+    if (scanTimeoutId) clearTimeout(scanTimeoutId);
+    scanTimeoutId = null;
   }
 });
