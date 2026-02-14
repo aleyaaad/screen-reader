@@ -3,6 +3,7 @@
   "name": "screen_reader",
   "version": "0.0.1",
   "author": "Aleysa",
+  "description": "Screen Reader Assistant with object detection and visual scanning overlay.",
 
   "action": {
     "default_popup": "popup.html",
@@ -11,21 +12,27 @@
 
   "options_page": "options.html",
 
-  "content_scripts": [
-    {
-      "matches": ["<all_urls>"],
-      "js": ["contentscript.js"]
-    }
-  ],
-
-
   "background": {
     "service_worker": "background.js"
   },
 
-  "permissions": ["activeTab", "scripting", "tabs", "storage"],
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["contentscript.js"],
+      "run_at": "document_idle"
+    }
+  ],
 
-  "host_permissions": ["<all_urls>"]
-  
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "tabs",
+    "storage"
+  ],
 
+  "host_permissions": [
+    "<all_urls>",
+    "https://api-inference.huggingface.co/*"
+  ]
 }
