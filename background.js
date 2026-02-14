@@ -1,14 +1,17 @@
-console.log("BACKGROUND RUNNING - OPTIONS TOKEN VERSION - feb14");
+console.log("BACKGROUND RUNNING - DETR VERSION - feb14");
 
-// background.js (manifest v3 service worker)
+// manifest v3 service worker
 
-const BLIP_URL =
-  "https://router.huggingface.co/hf-inference/models/Salesforce/blip-image-captioning-large";
+// IMPORTANT:
+// hf-inference does NOT support BLIP image captioning, so we use DETR object detection instead.
+// this endpoint IS supported on hf-inference.
+const DETR_URL =
+  "https://router.huggingface.co/hf-inference/models/facebook/detr-resnet-50";
 
-// get token from chrome storage
+// get token from chrome storage (saved from your options page)
 async function getHfToken() {
   const { hfToken } = await chrome.storage.local.get(["hfToken"]);
-  return (hfToken || "").trim(); // should look like "hf_xxxxx"
+  return hfToken; // should look like "hf_xxxxx"
 }
 
 // convert screenshot dataURL -> Blob (service worker safe)
@@ -17,74 +20,95 @@ async function dataUrlToBlob(dataUrl) {
   return await res.blob();
 }
 
-// send image to BLIP and return description
-async function askBlipToDescribe(dataUrl) {
+// turn DETR detections into a simple sentence
+function detectionsToSentence(detections) {
+  if (!Array.isArray(detections) || detections.length === 0) {
+    return "i couldn't detect any objects on screen.";
+  }
+
+  // keep only decent-confidence detections
+  const good = detections
+    .filter((d) => (d?.score ?? 0) >= 0.4 && d?.label)
+    .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+    .slice(0, 8);
+
+  if (good.length === 0) {
+    return "i saw some shapes but nothing confident enough to name.";
+  }
+
+  // count labels
+  const counts = {};
+  for (const d of good) {
+    const label = d.label.toLowerCase();
+    counts[label] = (counts[label] || 0) + 1;
+  }
+
+  const parts = Object.entries(counts).map(([label, n]) =>
+    n === 1 ? `a ${label}` : `${n} ${label}s`
+  );
+
+  return `on screen i detect ${parts.join(", ")}.`;
+}
+
+// send screenshot to DETR and return description
+async function askDetrToDescribe(dataUrl) {
   try {
     const hfToken = await getHfToken();
-    console.log("hf token exists?", !!hfToken);
-
     if (!hfToken) {
       return "no huggingface token saved. open extension options and add one.";
     }
 
     const blob = await dataUrlToBlob(dataUrl);
 
-    const response = await fetch(BLIP_URL, {
+    const response = await fetch(DETR_URL, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${hfToken}`,
-        Accept: "application/json",
       },
       body: blob,
     });
 
     const rawText = await response.text();
-    console.log("BLIP status:", response.status);
-    console.log("BLIP raw response:", rawText);
+    console.log("DETR status:", response.status);
+    console.log("DETR raw response:", rawText);
 
     let result;
     try {
       result = JSON.parse(rawText);
     } catch {
-      return `blip returned non-json (status ${response.status}).`;
+      return "detr returned a non-json response.";
     }
 
     if (!response.ok) {
       const msg = result?.error || `http ${response.status}`;
-      return `blip failed: ${msg}`;
+      return `detr failed: ${msg}`;
     }
 
-    if (Array.isArray(result) && result[0]?.generated_text) {
-      return result[0].generated_text;
-    }
-
-    if (result?.error) {
-      return `blip error: ${result.error}`;
-    }
-
-    return "blip did not return a description.";
+    // success shape for object detection is usually an array of detections:
+    // [{ score: 0.98, label: "person", box: {xmin, ymin, xmax, ymax}}, ...]
+    return detectionsToSentence(result);
   } catch (err) {
-    console.error("askBlipToDescribe crashed:", err);
-    return `blip failed: ${err?.message || err}`;
+    console.error("askDetrToDescribe crashed:", err);
+    return `detr failed: ${err?.message || err}`;
   }
 }
 
 // listen for content script messages
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  console.log("background got message:", request);
-
   if (request?.type !== "CAPTURE_SCREEN") return;
 
-  chrome.tabs.captureVisibleTab(null, { format: "png" }, async (dataUrl) => {
-    console.log("captureVisibleTab ran. has dataUrl:", !!dataUrl);
+  console.log("background got message:", request);
 
+  chrome.tabs.captureVisibleTab(null, { format: "png" }, async (dataUrl) => {
     try {
+      console.log("captureVisibleTab ran. has dataUrl:", !!dataUrl);
+
       if (!dataUrl) {
         sendResponse({ ok: false, description: "failed to capture screenshot." });
         return;
       }
 
-      const description = await askBlipToDescribe(dataUrl);
+      const description = await askDetrToDescribe(dataUrl);
       sendResponse({ ok: true, description });
     } catch (err) {
       console.error("capture/describe failed:", err);
