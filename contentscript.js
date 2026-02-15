@@ -353,11 +353,64 @@ document.addEventListener(
         lastTarget = null;
       }, 450);
 
-      if (clickCount === 3) {
-        // prevent your dblclick scan from firing on click #2/#3
-        suppressScanUntil = Date.now() + 600;
+     // ============================
+// triple click anywhere -> read text aloud (elevenlabs)
+// FIX: suppress dblclick scan starting at click #2 so images/detr never triggers
+// ============================
+(() => {
+  let clickCount = 0;
+  let clickTimer = null;
+  let lastTarget = null;
 
-        // stop counting
+  function pickTextFromEvent(e) {
+    const selected = window.getSelection?.().toString()?.trim();
+    if (selected) return selected;
+
+    let el = e?.target;
+    if (!el) return "";
+
+    const badTags = new Set(["SCRIPT", "STYLE", "NOSCRIPT"]);
+    if (el.tagName && badTags.has(el.tagName)) return "";
+
+    let text = "";
+    if (typeof el.innerText === "string") text = el.innerText.trim();
+    if (!text && typeof el.textContent === "string") text = el.textContent.trim();
+
+    let hops = 0;
+    while ((!text || text.length < 2) && el && hops < 3) {
+      el = el.parentElement;
+      if (!el) break;
+      if (el.tagName && badTags.has(el.tagName)) break;
+      if (typeof el.innerText === "string") text = el.innerText.trim();
+      hops++;
+    }
+
+    if (text.length > 1200) text = text.slice(0, 1200) + "…";
+    return text;
+  }
+
+  document.addEventListener(
+    "click",
+    (e) => {
+      if (lastTarget && e.target !== lastTarget) clickCount = 0;
+      lastTarget = e.target;
+
+      clickCount += 1;
+
+      // key fix: as soon as user hits 2 clicks, suppress the dblclick scan
+      // (dblclick event happens right after click #2)
+      if (clickCount === 2) {
+        suppressScanUntil = Date.now() + 900; // a bit longer to be safe
+      }
+
+      if (clickTimer) clearTimeout(clickTimer);
+      clickTimer = setTimeout(() => {
+        clickCount = 0;
+        clickTimer = null;
+        lastTarget = null;
+      }, 450);
+
+      if (clickCount === 3) {
         clickCount = 0;
         if (clickTimer) clearTimeout(clickTimer);
         clickTimer = null;
@@ -365,9 +418,13 @@ document.addEventListener(
         const text = pickTextFromEvent(e);
         if (!text) return;
 
-        // use your existing elevenlabs pipeline
         speakWithElevenLabs(text);
       }
+    },
+    true
+  );
+})();
+
     },
     true // capture so we still get the click even if the site stops propagation
   );
