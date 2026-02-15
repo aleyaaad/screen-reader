@@ -1,26 +1,12 @@
-console.log("### NEW CONTENTSCRIPT VERSION feb14 scanner ###", Date.now());
-
-// contentscript.js
-
 console.log("screen_reader contentscript loaded");
 
-// ============================
-// tiny debug toast
-// ============================
-function toast(msg) {
-  const t = document.createElement("div");
-  t.textContent = msg;
-  t.style.cssText =
-    "position:fixed;top:16px;left:16px;z-index:2147483647;background:#000;color:#fff;padding:8px 10px;border-radius:10px;font:700 12px system-ui;pointer-events:none;opacity:.9;";
-  document.documentElement.appendChild(t);
-  setTimeout(() => t.remove(), 900);
-}
-
-// ============================
-// scanner overlay (very visible)
-// ============================
+// --------------------
+// scanner overlay
+// --------------------
 const SCAN_ID = "sr-scan-overlay";
 const STYLE_ID = "sr-scan-style";
+
+let scanTimeoutId = null;
 
 function showScan(message = "scanning…") {
   if (!document.getElementById(STYLE_ID)) {
@@ -31,7 +17,7 @@ function showScan(message = "scanning…") {
         position:fixed; inset:0;
         z-index:2147483647;
         pointer-events:none;
-        background:rgba(0,0,0,.25);
+        background:rgba(0,0,0,.20);
       }
       #${SCAN_ID} .line{
         position:absolute; left:0; right:0;
@@ -68,75 +54,156 @@ function showScan(message = "scanning…") {
 
 function hideScan() {
   document.getElementById(SCAN_ID)?.remove();
+  if (scanTimeoutId) clearTimeout(scanTimeoutId);
+  scanTimeoutId = null;
 }
 
-// ============================
-// dblclick trigger (ONLY trigger)
-// ============================
-let scanTimeoutId = null;
+// --------------------
+// red boxes layer
+// --------------------
+const DRAW_ID = "sr-draw-layer";
+const DRAW_STYLE_ID = "sr-draw-style";
 
+function ensureDrawLayer() {
+  if (!document.getElementById(DRAW_STYLE_ID)) {
+    const style = document.createElement("style");
+    style.id = DRAW_STYLE_ID;
+    style.textContent = `
+      #${DRAW_ID}{
+        position:fixed; inset:0;
+        z-index:2147483646;
+        pointer-events:none;
+      }
+      .sr-box{
+        position:absolute;
+        border:3px solid rgba(255,0,0,.95);
+        border-radius:6px;
+        box-sizing:border-box;
+      }
+      .sr-label{
+        position:absolute;
+        left:0; top:-24px;
+        padding:4px 8px;
+        border-radius:10px;
+        background:rgba(0,0,0,.75);
+        color:#fff;
+        font:800 12px system-ui;
+        white-space:nowrap;
+      }
+    `;
+    document.documentElement.appendChild(style);
+  }
+
+  let layer = document.getElementById(DRAW_ID);
+  if (!layer) {
+    layer = document.createElement("div");
+    layer.id = DRAW_ID;
+    document.documentElement.appendChild(layer);
+  }
+  return layer;
+}
+
+function drawDetections(detections = []) {
+  const layer = ensureDrawLayer();
+  layer.innerHTML = "";
+
+  const dpr = window.devicePixelRatio || 1;
+
+  for (const det of detections) {
+    const score = det?.score ?? 0;
+    if (score < 0.3) continue;
+    const box = det?.box;
+    if (!box) continue;
+
+    //  DPR FIX
+    const xmin = box.xmin / dpr;
+    const ymin = box.ymin / dpr;
+    const xmax = box.xmax / dpr;
+    const ymax = box.ymax / dpr;
+
+    const el = document.createElement("div");
+    el.className = "sr-box";
+    el.style.left = `${xmin}px`;
+    el.style.top = `${ymin}px`;
+    el.style.width = `${Math.max(0, xmax - xmin)}px`;
+    el.style.height = `${Math.max(0, ymax - ymin)}px`;
+
+    const label = document.createElement("div");
+    label.className = "sr-label";
+    label.textContent = `${det.label} ${(score * 100).toFixed(0)}%`;
+
+    el.appendChild(label);
+    layer.appendChild(el);
+  }
+
+  setTimeout(() => {
+    const l = document.getElementById(DRAW_ID);
+    if (l) l.innerHTML = "";
+  }, 3500);
+}
+
+// --------------------
+// helper: handle results in one place
+// --------------------
+function handleResults(detections) {
+  hideScan();           // ✅ clears timeout too
+  drawDetections(detections || []);
+}
+
+// --------------------
+// dblclick trigger (only trigger)
+// --------------------
+let lastScanAt = 0;
 document.addEventListener(
   "dblclick",
   () => {
-    toast("dblclick ✅");
+    const now = Date.now();
+    if (now - lastScanAt < 700) return; // prevent double-trigger
+    lastScanAt = now;
+
     showScan("scanning screen…");
 
     // fail-safe only if nothing returns
     if (scanTimeoutId) clearTimeout(scanTimeoutId);
     scanTimeoutId = setTimeout(() => {
-      toast("scan overlay timeout ⏳");
+      console.log("scan overlay timeout ⏳ (results took too long)");
       hideScan();
-      scanTimeoutId = null;
-    }, 2500);
+    }, 5000); // ✅ increase so it won't fire on normal latency
 
     chrome.runtime.sendMessage({ type: "CAPTURE_SCREEN" }, (resp) => {
       if (chrome.runtime.lastError) {
-        console.error("sendMessage lastError:", chrome.runtime.lastError.message);
-        toast("sendMessage error ❌");
+        console.error("sendMessage error:", chrome.runtime.lastError.message);
         hideScan();
-        if (scanTimeoutId) clearTimeout(scanTimeoutId);
-        scanTimeoutId = null;
         return;
       }
-
-      // if background responds with ok:false, show why
+      // ✅ if background returns detections in the direct response, draw them too
+      if (resp?.ok && Array.isArray(resp.detections)) {
+        handleResults(resp.detections);
+      }
       if (resp?.ok === false) {
         console.error("background error:", resp.error);
-        toast(`error: ${String(resp.error).slice(0, 40)}`);
         hideScan();
-        if (scanTimeoutId) clearTimeout(scanTimeoutId);
-        scanTimeoutId = null;
       }
     });
   },
   true
 );
 
-// ============================
-// receive messages from background
-// supports DETR_RESULT, DETECTIONS_RESULT, ERROR, HIDE_SCANNING
-// ============================
+// --------------------
+// listen for results messages (support multiple types)
+// --------------------
 chrome.runtime.onMessage.addListener((msg) => {
-  console.log("content got message:", msg);
+  // scanner control messages
+  if (msg?.type === "SHOW_SCANNING") showScan(msg.message || "scanning…");
+  if (msg?.type === "HIDE_SCANNING") hideScan();
 
+  // ✅ support both message types
   if (msg?.type === "DETR_RESULT" || msg?.type === "DETECTIONS_RESULT") {
-    toast("results ✅");
-    hideScan();
-    if (scanTimeoutId) clearTimeout(scanTimeoutId);
-    scanTimeoutId = null;
-  }
-
-  if (msg?.type === "HIDE_SCANNING") {
-    hideScan();
-    if (scanTimeoutId) clearTimeout(scanTimeoutId);
-    scanTimeoutId = null;
+    handleResults(msg.detections || []);
   }
 
   if (msg?.type === "ERROR") {
     console.error("scan error:", msg.error);
-    toast(`error: ${String(msg.error).slice(0, 40)}`);
     hideScan();
-    if (scanTimeoutId) clearTimeout(scanTimeoutId);
-    scanTimeoutId = null;
   }
 });

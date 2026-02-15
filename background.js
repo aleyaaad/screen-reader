@@ -2,7 +2,7 @@
 
 console.log("BACKGROUND RUNNING - DETR VERSION - feb14");
 
-const DETR_API_KEY = "Bearer hf_YOUR_NEW_TOKEN_HERE";
+const DETR_API_KEY = "Bearer hf_xxx"; // ✅ REPLACE with your Hugging Face API key (starts
 const DETR_API_URL =
   "https://router.huggingface.co/hf-inference/models/facebook/detr-resnet-50";
 
