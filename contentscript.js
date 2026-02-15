@@ -1,11 +1,12 @@
+// contentscript.js (option B: scan stops ONLY when results arrive + boxes drawn)
+
 console.log("screen_reader contentscript loaded");
 
-// --------------------
+// ============================
 // scanner overlay
-// --------------------
+// ============================
 const SCAN_ID = "sr-scan-overlay";
 const STYLE_ID = "sr-scan-style";
-
 let scanTimeoutId = null;
 
 function showScan(message = "scanning…") {
@@ -58,9 +59,9 @@ function hideScan() {
   scanTimeoutId = null;
 }
 
-// --------------------
-// red boxes layer
-// --------------------
+// ============================
+// red boxes layer (with DPR fix)
+// ============================
 const DRAW_ID = "sr-draw-layer";
 const DRAW_STYLE_ID = "sr-draw-style";
 
@@ -112,10 +113,11 @@ function drawDetections(detections = []) {
   for (const det of detections) {
     const score = det?.score ?? 0;
     if (score < 0.3) continue;
+
     const box = det?.box;
     if (!box) continue;
 
-    //  DPR FIX
+    // ✅ scale screenshot pixels -> css pixels
     const xmin = box.xmin / dpr;
     const ymin = box.ymin / dpr;
     const xmax = box.xmax / dpr;
@@ -142,18 +144,11 @@ function drawDetections(detections = []) {
   }, 3500);
 }
 
-// --------------------
-// helper: handle results in one place
-// --------------------
-function handleResults(detections) {
-  hideScan();           // ✅ clears timeout too
-  drawDetections(detections || []);
-}
-
-// --------------------
-// dblclick trigger (only trigger)
-// --------------------
+// ============================
+// dblclick trigger (ONLY trigger)
+// ============================
 let lastScanAt = 0;
+
 document.addEventListener(
   "dblclick",
   () => {
@@ -163,47 +158,53 @@ document.addEventListener(
 
     showScan("scanning screen…");
 
-    // fail-safe only if nothing returns
+    // long failsafe ONLY if nothing ever returns (scan should normally stop on results)
     if (scanTimeoutId) clearTimeout(scanTimeoutId);
     scanTimeoutId = setTimeout(() => {
-      console.log("scan overlay timeout ⏳ (results took too long)");
+      console.log("scan timed out (no response)");
       hideScan();
-    }, 5000); // ✅ increase so it won't fire on normal latency
+    }, 15000);
 
+    // IMPORTANT: do NOT hide scan here, only on results
     chrome.runtime.sendMessage({ type: "CAPTURE_SCREEN" }, (resp) => {
       if (chrome.runtime.lastError) {
         console.error("sendMessage error:", chrome.runtime.lastError.message);
         hideScan();
         return;
       }
-      // ✅ if background returns detections in the direct response, draw them too
-      if (resp?.ok && Array.isArray(resp.detections)) {
-        handleResults(resp.detections);
-      }
       if (resp?.ok === false) {
         console.error("background error:", resp.error);
         hideScan();
       }
+      // if resp.ok is true, we still wait for the DETR_RESULT message to stop scanning
     });
   },
   true
 );
 
-// --------------------
-// listen for results messages (support multiple types)
-// --------------------
+// ============================
+// stop scanning ONLY when results arrive (and draw boxes)
+// ============================
 chrome.runtime.onMessage.addListener((msg) => {
-  // scanner control messages
-  if (msg?.type === "SHOW_SCANNING") showScan(msg.message || "scanning…");
-  if (msg?.type === "HIDE_SCANNING") hideScan();
+  if (!msg?.type) return;
 
-  // ✅ support both message types
-  if (msg?.type === "DETR_RESULT" || msg?.type === "DETECTIONS_RESULT") {
-    handleResults(msg.detections || []);
+  if (msg.type === "SHOW_SCANNING") {
+    showScan(msg.message || "scanning…");
+    return;
   }
 
-  if (msg?.type === "ERROR") {
+  if (msg.type === "ERROR") {
     console.error("scan error:", msg.error);
     hideScan();
+    return;
   }
+
+  if (msg.type === "DETR_RESULT" || msg.type === "DETECTIONS_RESULT") {
+    const detections = msg.detections || [];
+    drawDetections(detections); // ✅ boxes first
+    hideScan();                 // ✅ then stop scanning
+    return;
+  }
+
+  // if background sends HIDE_SCANNING, ignore it (option B wants scan to stop on results)
 });
