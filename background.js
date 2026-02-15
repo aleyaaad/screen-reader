@@ -12,8 +12,13 @@ const DETR_API_URL =
 // --------------------
 // ElevenLabs TTS
 // --------------------
-const ELEVEN_API_KEY = "sk_YOUR_ELEVENLABS_KEY_HERE";
+// keep this secret: do NOT put in content script
+const ELEVEN_API_KEY = "YOUR_ELEVENLABS_XI_API_KEY_HERE";
+
+// pick a voice id from your ElevenLabs account (or use a known one from your voice list)
 const ELEVEN_VOICE_ID = "YOUR_VOICE_ID_HERE";
+
+// model defaults to eleven_multilingual_v2 per docs
 const ELEVEN_MODEL_ID = "eleven_multilingual_v2";
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -33,7 +38,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
         const detections = await runDetr(dataUrl);
 
+        // OPTION B: do NOT send HIDE_SCANNING here — content stops on results
         await safeSend(tabId, { type: "DETR_RESULT", detections });
+
         sendResponse({ ok: true, detections });
         return;
       }
@@ -46,20 +53,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           return;
         }
 
-        const voiceId = msg.voiceId || ELEVEN_VOICE_ID;
-        const audioB64 = await elevenTtsToBase64(text, { voiceId });
+        const audioB64 = await elevenTtsToBase64(text, {
+          voiceId: msg.voiceId || ELEVEN_VOICE_ID
+        });
 
         sendResponse({ ok: true, audioB64 });
         return;
       }
-
-      sendResponse({ ok: false, error: "Unknown message type." });
     } catch (err) {
       console.error("background error:", err);
-      try {
-        const tabId = sender?.tab?.id;
-        if (tabId) await safeSend(tabId, { type: "ERROR", error: String(err?.message || err) });
-      } catch (_) {}
       sendResponse({ ok: false, error: String(err?.message || err) });
     }
   })();
@@ -78,9 +80,9 @@ async function runDetr(dataUrl) {
       method: "POST",
       headers: {
         Authorization: DETR_API_KEY,
-        "Content-Type": "application/json",
+        "Content-Type": "application/json"
       },
-      body: JSON.stringify({ inputs: base64 }),
+      body: JSON.stringify({ inputs: base64 })
     });
 
     if (resp.ok) {
@@ -90,12 +92,10 @@ async function runDetr(dataUrl) {
 
     const text = await resp.text().catch(() => "");
     let parsed = null;
-    try {
-      parsed = JSON.parse(text);
-    } catch (_) {}
+    try { parsed = JSON.parse(text); } catch (_) {}
 
     if (resp.status === 503 && parsed?.estimated_time) {
-      const waitMs = Math.ceil(parsed.estimated_time * 1000) + 350;
+      const waitMs = Math.ceil(parsed.estimated_time * 1000) + 300;
       console.log(`HF model loading, waiting ${waitMs}ms (attempt ${attempt})`);
       await new Promise((r) => setTimeout(r, waitMs));
       continue;
@@ -109,10 +109,15 @@ async function runDetr(dataUrl) {
 
 // --------------------
 // ElevenLabs: text -> mp3 -> base64
+// API uses xi-api-key header :contentReference[oaicite:0]{index=0}
 // --------------------
 async function elevenTtsToBase64(text, { voiceId }) {
-  if (!ELEVEN_API_KEY) throw new Error("Missing ElevenLabs API key in background.js");
-  if (!voiceId) throw new Error("Missing ElevenLabs voice id in background.js");
+  if (!ELEVEN_API_KEY || ELEVEN_API_KEY.includes("YOUR_ELEVEN")) {
+    throw new Error("Missing ElevenLabs API key in background.js");
+  }
+  if (!voiceId || voiceId.includes("YOUR_VOICE")) {
+    throw new Error("Missing ElevenLabs voice id in background.js");
+  }
 
   const url = `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`;
 
@@ -121,18 +126,18 @@ async function elevenTtsToBase64(text, { voiceId }) {
     headers: {
       "xi-api-key": ELEVEN_API_KEY,
       "Content-Type": "application/json",
-      Accept: "audio/mpeg",
+      "Accept": "audio/mpeg"
     },
     body: JSON.stringify({
       text,
       model_id: ELEVEN_MODEL_ID,
       voice_settings: {
-        stability: 0.55,
-        similarity_boost: 0.8,
+        stability: 0.4,
+        similarity_boost: 0.75,
         style: 0.0,
-        use_speaker_boost: true,
-      },
-    }),
+        use_speaker_boost: true
+      }
+    })
   });
 
   if (!resp.ok) {
@@ -157,5 +162,7 @@ function arrayBufferToBase64(buf) {
 async function safeSend(tabId, message) {
   try {
     await chrome.tabs.sendMessage(tabId, message);
-  } catch (_) {}
+  } catch (e) {
+    // ignore if not injectable page
+  }
 }
