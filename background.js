@@ -1,0 +1,264 @@
+// background.js (MV3 service worker)
+console.log("BACKGROUND RUNNING - DETR + ELEVENLABS + BLIP - feb15");
+
+// --------------------
+// Hugging Face DETR
+// --------------------
+const DETR_API_KEY = "Bearer ";
+const DETR_API_URL = "https://router.huggingface.co/hf-inference/models/facebook/detr-resnet-50";
+
+// --------------------
+// Hugging Face BLIP (image caption)
+// --------------------
+const BLIP_API_KEY = "Bearer ";
+const BLIP_API_URL =
+  "https://router.huggingface.co/hf-inference/models/Salesforce/blip-image-captioning-large";
+
+// --------------------
+// ElevenLabs TTS
+// --------------------
+// keep this secret: do NOT put in content script
+const ELEVEN_API_KEY = "";
+
+// pick a voice id from your ElevenLabs account (or use a known one from your voice list)
+const ELEVEN_VOICE_ID = "";
+
+// model defaults to eleven_multilingual_v2 per docs
+const ELEVEN_MODEL_ID = "eleven_multilingual_v2";
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  (async () => {
+    try {
+      // ---- DETR flow ----
+      if (msg?.type === "CAPTURE_SCREEN") {
+        const tabId = sender?.tab?.id;
+        const windowId = sender?.tab?.windowId;
+
+        if (!tabId || windowId == null) {
+          throw new Error("No active tab info found.");
+        }
+
+        await safeSend(tabId, {
+          type: "SHOW_SCANNING",
+          message: "scanning screen…"
+        });
+
+        const dataUrl = await chrome.tabs.captureVisibleTab(windowId, {
+          format: "png"
+        });
+
+        if (!dataUrl) {
+          throw new Error("Screenshot capture failed.");
+        }
+
+        const detections = await runDetr(dataUrl);
+
+        // OPTION B: do NOT send HIDE_SCANNING here — content stops on results
+        await safeSend(tabId, {
+          type: "DETR_RESULT",
+          detections
+        });
+
+        sendResponse({ ok: true, detections });
+        return;
+      }
+
+      // ---- BLIP flow (describe hovered image) ----
+      if (msg?.type === "DESCRIBE_IMAGE") {
+        const tabId = sender?.tab?.id;
+        const imageUrl = String(msg?.imageUrl || "").trim();
+
+        if (!tabId) throw new Error("No active tab id found.");
+        if (!imageUrl) throw new Error("Missing imageUrl.");
+
+        // fetch image + base64 in background (avoids content-script cors pain)
+        const b64 = await urlToBase64(imageUrl);
+
+        // ask blip for caption
+        const caption = await askBlipBase64(b64);
+
+        // send back to content script so it can speak it
+        await safeSend(tabId, {
+          type: "IMAGE_DESC_RESULT",
+          caption
+        });
+
+        sendResponse({ ok: true, caption });
+        return;
+      }
+
+      // ---- ElevenLabs flow ----
+      if (msg?.type === "SPEAK_TEXT") {
+        const text = String(msg?.text || "").trim();
+
+        if (!text) {
+          sendResponse({ ok: false, error: "No text provided." });
+          return;
+        }
+
+        const audioB64 = await elevenTtsToBase64(text, {
+          voiceId: msg.voiceId || ELEVEN_VOICE_ID
+        });
+
+        sendResponse({ ok: true, audioB64 });
+        return;
+      }
+    } catch (err) {
+      console.error("background error:", err);
+      sendResponse({ ok: false, error: String(err?.message || err) });
+    }
+  })();
+
+  return true;
+});
+
+// --------------------
+// DETR with retry for warmup
+// --------------------
+async function runDetr(dataUrl) {
+  const base64 = dataUrl.split(",")[1];
+
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    const resp = await fetch(DETR_API_URL, {
+      method: "POST",
+      headers: {
+        Authorization: DETR_API_KEY,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ inputs: base64 })
+    });
+
+    if (resp.ok) {
+      const json = await resp.json();
+      return Array.isArray(json) ? json : [];
+    }
+
+    const text = await resp.text().catch(() => "");
+    let parsed = null;
+
+    try {
+      parsed = JSON.parse(text);
+    } catch (_) {}
+
+    if (resp.status === 503 && parsed?.estimated_time) {
+      const waitMs = Math.ceil(parsed.estimated_time * 1000) + 300;
+      console.log(`HF model loading, waiting ${waitMs}ms (attempt ${attempt})`);
+      await new Promise((r) => setTimeout(r, waitMs));
+      continue;
+    }
+
+    throw new Error(`detr failed: ${resp.status} ${text}`);
+  }
+
+  throw new Error("detr failed: retry limit hit");
+}
+
+// --------------------
+// BLIP helpers
+// --------------------
+async function urlToBase64(url) {
+  // IMPORTANT: some sites block hotlinking/cors. this will work for many, not all.
+  // if you hit cors issues, the reliable approach is: captureVisibleTab + crop hovered rect.
+  const res = await fetch(url, { mode: "cors" });
+  if (!res.ok) throw new Error(`image fetch failed: ${res.status}`);
+
+  const blob = await res.blob();
+
+  return await new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onloadend = () => {
+      const dataUrl = r.result; // "data:image/...;base64,...."
+      const b64 = String(dataUrl).split(",")[1] || "";
+      resolve(b64);
+    };
+    r.onerror = reject;
+    r.readAsDataURL(blob);
+  });
+}
+
+async function askBlipBase64(imageB64) {
+  const resp = await fetch(BLIP_API_URL, {
+    method: "POST",
+    headers: {
+      Authorization: BLIP_API_KEY,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ inputs: imageB64 })
+  });
+
+  const text = await resp.text().catch(() => "");
+  if (!resp.ok) throw new Error(`blip failed: ${resp.status} ${text}`);
+
+  let json = null;
+  try {
+    json = JSON.parse(text);
+  } catch (_) {
+    throw new Error(`bad blip json: ${text}`);
+  }
+
+  const caption = json?.[0]?.generated_text || json?.generated_text || "";
+  return String(caption || "").trim();
+}
+
+// --------------------
+// ElevenLabs: text -> mp3 -> base64
+// API uses xi-api-key header
+// --------------------
+async function elevenTtsToBase64(text, { voiceId }) {
+  if (!ELEVEN_API_KEY || ELEVEN_API_KEY.includes("YOUR_ELEVEN")) {
+    throw new Error("Missing ElevenLabs API key in background.js");
+  }
+
+  if (!voiceId || voiceId.includes("YOUR_VOICE")) {
+    throw new Error("Missing ElevenLabs voice id in background.js");
+  }
+
+  const url = `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`;
+
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: {
+      "xi-api-key": ELEVEN_API_KEY,
+      "Content-Type": "application/json",
+      Accept: "audio/mpeg"
+    },
+    body: JSON.stringify({
+      text,
+      model_id: ELEVEN_MODEL_ID,
+      voice_settings: {
+        stability: 0.4,
+        similarity_boost: 0.75,
+        style: 0.0,
+        use_speaker_boost: true
+      }
+    })
+  });
+
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => "");
+    throw new Error(`elevenlabs failed: ${resp.status} ${errText}`);
+  }
+
+  const arrayBuf = await resp.arrayBuffer();
+  return arrayBufferToBase64(arrayBuf);
+}
+
+function arrayBufferToBase64(buf) {
+  const bytes = new Uint8Array(buf);
+  let binary = "";
+  const chunkSize = 0x8000;
+
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+
+  return btoa(binary);
+}
+
+async function safeSend(tabId, message) {
+  try {
+    await chrome.tabs.sendMessage(tabId, message);
+  } catch (e) {
+    // ignore if not injectable page
+  }
+}
