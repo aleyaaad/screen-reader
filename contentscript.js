@@ -60,6 +60,111 @@ function hideScan() {
 }
 
 // ============================
+// red boxes layer (optional but nice)
+// ============================
+const DRAW_ID = "sr-draw-layer";
+const DRAW_STYLE_ID = "sr-draw-style";
+
+function ensureDrawLayer() {
+  if (!document.getElementById(DRAW_STYLE_ID)) {
+    const style = document.createElement("style");
+    style.id = DRAW_STYLE_ID;
+    style.textContent = `
+      #${DRAW_ID}{
+        position:fixed; inset:0;
+        z-index:2147483646;
+        pointer-events:none;
+      }
+      .sr-box{
+        position:absolute;
+        border:3px solid rgba(255,0,0,.95);
+        border-radius:6px;
+        box-sizing:border-box;
+      }
+      .sr-label{
+        position:absolute;
+        left:0; top:-24px;
+        padding:4px 8px;
+        border-radius:10px;
+        background:rgba(0,0,0,.75);
+        color:#fff;
+        font:800 12px system-ui;
+        white-space:nowrap;
+      }
+    `;
+    document.documentElement.appendChild(style);
+  }
+
+  let layer = document.getElementById(DRAW_ID);
+  if (!layer) {
+    layer = document.createElement("div");
+    layer.id = DRAW_ID;
+    document.documentElement.appendChild(layer);
+  }
+  return layer;
+}
+
+function drawDetections(detections = []) {
+  const layer = ensureDrawLayer();
+  layer.innerHTML = "";
+
+  const dpr = window.devicePixelRatio || 1;
+
+  for (const det of detections) {
+    const score = det?.score ?? 0;
+    if (score < 0.3) continue;
+
+    const box = det?.box;
+    if (!box) continue;
+
+    const xmin = box.xmin / dpr;
+    const ymin = box.ymin / dpr;
+    const xmax = box.xmax / dpr;
+    const ymax = box.ymax / dpr;
+
+    const el = document.createElement("div");
+    el.className = "sr-box";
+    el.style.left = `${xmin}px`;
+    el.style.top = `${ymin}px`;
+    el.style.width = `${Math.max(0, xmax - xmin)}px`;
+    el.style.height = `${Math.max(0, ymax - ymin)}px`;
+
+    const label = document.createElement("div");
+    label.className = "sr-label";
+    label.textContent = `${det.label} ${(score * 100).toFixed(0)}%`;
+
+    el.appendChild(label);
+    layer.appendChild(el);
+  }
+
+  setTimeout(() => {
+    const l = document.getElementById(DRAW_ID);
+    if (l) l.innerHTML = "";
+  }, 3500);
+}
+
+function describeDetections(detections = []) {
+  const counts = new Map();
+
+  for (const det of detections) {
+    const score = det?.score ?? 0;
+    if (score < 0.3) continue;
+    const label = String(det?.label || "").trim();
+    if (!label) continue;
+    counts.set(label, (counts.get(label) || 0) + 1);
+  }
+
+  if (counts.size === 0) return "i don't see anything clearly.";
+
+  const parts = [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([label, n]) => `${n} ${n === 1 ? label : label + "s"}`);
+
+  return `on screen i detect ${parts.join(", ")}.`;
+}
+
+// ============================
 // ElevenLabs playback
 // ============================
 let srAudioEl = null;
@@ -125,7 +230,7 @@ async function speakWithElevenLabs(text) {
 }
 
 // ============================
-// unified scan trigger (reused by dblclick + shortcut)
+// scan trigger
 // ============================
 let lastScanAt = 0;
 let suppressScanUntil = 0;
@@ -157,11 +262,11 @@ function triggerScan() {
   });
 }
 
-// dblclick trigger
+// (keep your existing dblclick trigger if you want)
 document.addEventListener("dblclick", triggerScan, true);
 
 // ============================
-// triple click = text only (suppress scan starting at click #2)
+// triple click = text only (optional, kept)
 // ============================
 (() => {
   let clickCount = 0;
@@ -172,7 +277,7 @@ document.addEventListener("dblclick", triggerScan, true);
     const selected = window.getSelection?.().toString()?.trim();
     if (selected) return selected;
 
-    let el = e?.target;
+    const el = e?.target;
     if (!el) return "";
 
     let text = el.innerText?.trim() || el.textContent?.trim() || "";
@@ -188,10 +293,8 @@ document.addEventListener("dblclick", triggerScan, true);
 
       clickCount += 1;
 
-      // key fix: suppress scan right after click #2 (before dblclick fires)
-      if (clickCount === 2) {
-        suppressScanUntil = Date.now() + 900;
-      }
+      // suppress scan on click #2 so dblclick doesn't fire when triple-clicking
+      if (clickCount === 2) suppressScanUntil = Date.now() + 900;
 
       if (clickTimer) clearTimeout(clickTimer);
       clickTimer = setTimeout(() => {
@@ -217,7 +320,7 @@ document.addEventListener("dblclick", triggerScan, true);
 
 // ============================
 // NEW: fast image describe (no screenshot)
-// click an image once to "select" it, then trigger via shortcut
+// click an image once to "select" it, then Shift+I
 // ============================
 let lastClickedImageUrl = "";
 
@@ -226,7 +329,6 @@ document.addEventListener(
   (e) => {
     const img = e.target?.closest?.("img");
     if (!img) return;
-
     lastClickedImageUrl = img.currentSrc || img.src || "";
   },
   true
@@ -238,7 +340,6 @@ async function describeLastClickedImage() {
     return;
   }
 
-  // reuse overlay as feedback
   showScan("describing image…");
 
   const res = await chrome.runtime.sendMessage({
@@ -260,9 +361,52 @@ async function describeLastClickedImage() {
 }
 
 // ============================
-// messages from background:
-// - DETR results + scanning UI
-// - shortcut triggers
+// Shift shortcuts (your request)
+// Shift+R = read selected text
+// Shift+I = describe clicked image
+// Shift+S = scan screen
+// ============================
+function isTypingTarget(el) {
+  if (!el) return false;
+  const tag = el.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+  return !!el.isContentEditable;
+}
+
+document.addEventListener(
+  "keydown",
+  (e) => {
+    // only Shift + single letter (no ctrl/alt/meta)
+    if (!e.shiftKey) return;
+    if (e.ctrlKey || e.altKey || e.metaKey) return;
+
+    // don't hijack typing
+    if (isTypingTarget(e.target)) return;
+
+    const key = (e.key || "").toLowerCase();
+
+    if (key === "r") {
+      const selected = window.getSelection?.().toString()?.trim();
+      if (!selected) return;
+      speakWithElevenLabs(selected);
+      return;
+    }
+
+    if (key === "i") {
+      describeLastClickedImage();
+      return;
+    }
+
+    if (key === "s") {
+      triggerScan();
+      return;
+    }
+  },
+  true
+);
+
+// ============================
+// messages from background (DETR results + scanning UI)
 // ============================
 chrome.runtime.onMessage.addListener((msg) => {
   if (!msg?.type) return;
@@ -279,71 +423,11 @@ chrome.runtime.onMessage.addListener((msg) => {
   }
 
   if (msg.type === "DETR_RESULT" || msg.type === "DETECTIONS_RESULT") {
+    const detections = msg.detections || [];
+    drawDetections(detections);
     hideScan();
-    const sentence = typeof describeDetections === "function"
-      ? describeDetections(msg.detections || [])
-      : "scan complete.";
+    const sentence = describeDetections(detections);
     speakWithElevenLabs(sentence);
     return;
   }
-
-  // shortcut triggers
-  if (msg.type === "TRIGGER_SCAN") {
-    triggerScan();
-    return;
-  }
-
-  if (msg.type === "TRIGGER_READ_SELECTION") {
-    const selected = window.getSelection?.().toString()?.trim();
-    if (!selected) {
-      console.warn("no text selected");
-      return;
-    }
-    speakWithElevenLabs(selected);
-    return;
-  }
-
-  if (msg.type === "TRIGGER_DESCRIBE_IMAGE") {
-    describeLastClickedImage();
-    return;
-  }
-  // ============================
-// single-key controls (click -> press key)
-// R = read selected text
-// I = describe last clicked image
-// S = scan screen
-// (won't trigger while typing)
-// ============================
-function isTypingTarget(el) {
-  if (!el) return false;
-  const tag = el.tagName;
-  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
-  return !!el.isContentEditable;
-}
-
-document.addEventListener("keydown", (e) => {
-  // ignore if user is typing in a field
-  if (isTypingTarget(e.target)) return;
-
-  // ignore if modifiers are held (so we don't fight real shortcuts)
-  if (e.ctrlKey || e.metaKey || e.altKey) return;
-
-  const key = (e.key || "").toLowerCase();
-
-  if (key === "r") {
-    const selected = window.getSelection?.().toString()?.trim();
-    if (!selected) return;
-    speakWithElevenLabs(selected);
-  }
-
-  if (key === "i") {
-    // describe last clicked image (you already store lastClickedImageUrl)
-    describeLastClickedImage();
-  }
-
-  if (key === "s") {
-    triggerScan();
-  }
-}, true);
-
 });

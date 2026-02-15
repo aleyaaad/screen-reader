@@ -8,10 +8,7 @@
   "action": {
     "default_popup": "popup.html",
     "default_title": "Vision Assist"
-    
   },
-
-
 
   "options_page": "options.html",
 
@@ -28,30 +25,6 @@
   ],
 
   "permissions": ["activeTab", "scripting", "tabs", "storage"],
-  "commands": {
-  "scan-screen": {
-    "suggested_key": {
-      "default": "Alt+Shift+S",
-      "mac": "Command+Shift+S"
-    },
-    "description": "Scan screen for objects (DETR) and speak results"
-  },
-  "read-selection": {
-    "suggested_key": {
-      "default": "Alt+Shift+R",
-      "mac": "Command+Shift+R"
-    },
-    "description": "Read selected text aloud"
-  },
-  "describe-image": {
-    "suggested_key": {
-      "default": "Alt+Shift+I",
-      "mac": "Command+Shift+I"
-    },
-    "description": "Describe the last clicked image"
-  }
-},
-
 
   "host_permissions": [
     "<all_urls>",
