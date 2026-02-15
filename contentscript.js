@@ -108,7 +108,10 @@ function showTapToPlay(src) {
 
 async function speakWithElevenLabs(text) {
   const res = await chrome.runtime.sendMessage({ type: "SPEAK_TEXT", text });
-  if (!res?.ok) return;
+  if (!res?.ok) {
+    console.error("tts error:", res?.error);
+    return;
+  }
 
   const src = `data:audio/mpeg;base64,${res.audioB64}`;
   const a = ensureAudioEl();
@@ -122,33 +125,43 @@ async function speakWithElevenLabs(text) {
 }
 
 // ============================
-// dblclick trigger (scan)
+// unified scan trigger (reused by dblclick + shortcut)
 // ============================
 let lastScanAt = 0;
 let suppressScanUntil = 0;
 
-document.addEventListener(
-  "dblclick",
-  () => {
-    const now = Date.now();
-    if (now < suppressScanUntil) return;
-    if (now - lastScanAt < 700) return;
-    lastScanAt = now;
+function triggerScan() {
+  const now = Date.now();
+  if (now < suppressScanUntil) return;
+  if (now - lastScanAt < 700) return;
+  lastScanAt = now;
 
-    showScan("scanning screen…");
+  showScan("scanning screen…");
 
-    if (scanTimeoutId) clearTimeout(scanTimeoutId);
-    scanTimeoutId = setTimeout(() => {
+  if (scanTimeoutId) clearTimeout(scanTimeoutId);
+  scanTimeoutId = setTimeout(() => {
+    console.log("scan timed out (no response)");
+    hideScan();
+  }, 15000);
+
+  chrome.runtime.sendMessage({ type: "CAPTURE_SCREEN" }, (resp) => {
+    if (chrome.runtime.lastError) {
+      console.error("sendMessage error:", chrome.runtime.lastError.message);
       hideScan();
-    }, 15000);
+      return;
+    }
+    if (resp?.ok === false) {
+      console.error("background error:", resp.error);
+      hideScan();
+    }
+  });
+}
 
-    chrome.runtime.sendMessage({ type: "CAPTURE_SCREEN" });
-  },
-  true
-);
+// dblclick trigger
+document.addEventListener("dblclick", triggerScan, true);
 
 // ============================
-// triple click = text only
+// triple click = text only (suppress scan starting at click #2)
 // ============================
 (() => {
   let clickCount = 0;
@@ -156,14 +169,13 @@ document.addEventListener(
   let lastTarget = null;
 
   function pickText(e) {
-    const selected = window.getSelection()?.toString()?.trim();
+    const selected = window.getSelection?.().toString()?.trim();
     if (selected) return selected;
 
-    let el = e.target;
+    let el = e?.target;
     if (!el) return "";
 
     let text = el.innerText?.trim() || el.textContent?.trim() || "";
-
     if (text.length > 1200) text = text.slice(0, 1200) + "…";
     return text;
   }
@@ -174,9 +186,9 @@ document.addEventListener(
       if (lastTarget && e.target !== lastTarget) clickCount = 0;
       lastTarget = e.target;
 
-      clickCount++;
+      clickCount += 1;
 
-      // 🔥 suppress scan as soon as second click happens
+      // key fix: suppress scan right after click #2 (before dblclick fires)
       if (clickCount === 2) {
         suppressScanUntil = Date.now() + 900;
       }
@@ -191,6 +203,7 @@ document.addEventListener(
       if (clickCount === 3) {
         clickCount = 0;
         if (clickTimer) clearTimeout(clickTimer);
+        clickTimer = null;
 
         const text = pickText(e);
         if (!text) return;
@@ -203,7 +216,9 @@ document.addEventListener(
 })();
 
 // ============================
-// listen for DETR results
+// messages from background:
+// - DETR results + scanning UI
+// - shortcut triggers
 // ============================
 chrome.runtime.onMessage.addListener((msg) => {
   if (!msg?.type) return;
@@ -214,46 +229,24 @@ chrome.runtime.onMessage.addListener((msg) => {
   }
 
   if (msg.type === "ERROR") {
+    console.error("scan error:", msg.error);
     hideScan();
     return;
   }
 
   if (msg.type === "DETR_RESULT" || msg.type === "DETECTIONS_RESULT") {
     hideScan();
-    const sentence = describeDetections(msg.detections || []);
+    // assumes describeDetections exists elsewhere in your file/project like before
+    const sentence = typeof describeDetections === "function"
+      ? describeDetections(msg.detections || [])
+      : "scan complete.";
     speakWithElevenLabs(sentence);
+    return;
   }
-  // ============================
-// shortcut triggers (messages from background.js)
-// ============================
-chrome.runtime.onMessage.addListener((msg) => {
-  if (!msg?.type) return;
 
+  // shortcut triggers
   if (msg.type === "TRIGGER_SCAN") {
-    const now = Date.now();
-    if (now < suppressScanUntil) return; // respect your triple-click suppression
-    if (now - lastScanAt < 700) return;
-    lastScanAt = now;
-
-    showScan("scanning screen…");
-
-    if (scanTimeoutId) clearTimeout(scanTimeoutId);
-    scanTimeoutId = setTimeout(() => {
-      console.log("scan timed out (no response)");
-      hideScan();
-    }, 15000);
-
-    chrome.runtime.sendMessage({ type: "CAPTURE_SCREEN" }, (resp) => {
-      if (chrome.runtime.lastError) {
-        console.error("sendMessage error:", chrome.runtime.lastError.message);
-        hideScan();
-      }
-      if (resp?.ok === false) {
-        console.error("background error:", resp.error);
-        hideScan();
-      }
-    });
-
+    triggerScan();
     return;
   }
 
@@ -266,96 +259,4 @@ chrome.runtime.onMessage.addListener((msg) => {
     speakWithElevenLabs(selected);
     return;
   }
-<<<<<<< HEAD
-});
-
-=======
-  // ============================
-// triple click anywhere -> read text aloud (elevenlabs)
-// uses selected text first (triple click usually selects a paragraph)
-// falls back to clicked element text
-// ============================
-(() => {
-  let clickCount = 0;
-  let clickTimer = null;
-  let lastTarget = null;
-
-  function pickTextFromEvent(e) {
-    // 1) selected text is best
-    const selected = window.getSelection?.().toString()?.trim();
-    if (selected) return selected;
-
-    // 2) fallback: clicked element's visible text
-    let el = e?.target;
-    if (!el) return "";
-
-    const badTags = new Set(["SCRIPT", "STYLE", "NOSCRIPT"]);
-    if (el.tagName && badTags.has(el.tagName)) return "";
-
-    let text = "";
-    if (typeof el.innerText === "string") text = el.innerText.trim();
-    if (!text && typeof el.textContent === "string") text = el.textContent.trim();
-
-    // walk up a few parents if the clicked node has no meaningful text
-    let hops = 0;
-    while ((!text || text.length < 2) && el && hops < 3) {
-      el = el.parentElement;
-      if (!el) break;
-      if (el.tagName && badTags.has(el.tagName)) break;
-      if (typeof el.innerText === "string") text = el.innerText.trim();
-      hops++;
-    }
-
-    // keep it readable + not insanely long
-    if (text.length > 1200) text = text.slice(0, 1200) + "…";
-    return text;
-  }
-
-  document.addEventListener(
-    "click",
-    (e) => {
-      // keep triple-clicks to same target; reset if user clicks elsewhere
-      if (lastTarget && e.target !== lastTarget) clickCount = 0;
-      lastTarget = e.target;
-
-      clickCount += 1;
-
-      if (clickTimer) clearTimeout(clickTimer);
-      clickTimer = setTimeout(() => {
-        clickCount = 0;
-        clickTimer = null;
-        lastTarget = null;
-      }, 450);
-
-      if (clickCount === 3) {
-        // prevent your dblclick scan from firing on click #2/#3
-        suppressScanUntil = Date.now() + 600;
-
-        // stop counting
-        clickCount = 0;
-        if (clickTimer) clearTimeout(clickTimer);
-        clickTimer = null;
-
-        const text = pickTextFromEvent(e);
-        if (!text) return;
-
-        // use your existing elevenlabs pipeline
-        speakWithElevenLabs(text);
-      }
-    },
-    true // capture so we still get the click even if the site stops propagation
-  );
-})();
-
-
-  if (msg.type === "DETR_RESULT" || msg.type === "DETECTIONS_RESULT") {
-    const detections = msg.detections || [];
-
-    drawDetections(detections); // boxes first
-    hideScan();                 // scan stops once boxes appear
-
-    const sentence = describeDetections(detections);
-    speakWithElevenLabs(sentence); // then speak
-  }
->>>>>>> 72cbb1d85ab0201dd855d95f02b480eb8383fc3b
 });
