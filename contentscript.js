@@ -216,6 +216,50 @@ document.addEventListener("dblclick", triggerScan, true);
 })();
 
 // ============================
+// NEW: fast image describe (no screenshot)
+// click an image once to "select" it, then trigger via shortcut
+// ============================
+let lastClickedImageUrl = "";
+
+document.addEventListener(
+  "click",
+  (e) => {
+    const img = e.target?.closest?.("img");
+    if (!img) return;
+
+    lastClickedImageUrl = img.currentSrc || img.src || "";
+  },
+  true
+);
+
+async function describeLastClickedImage() {
+  if (!lastClickedImageUrl) {
+    console.warn("no image clicked yet");
+    return;
+  }
+
+  // reuse overlay as feedback
+  showScan("describing image…");
+
+  const res = await chrome.runtime.sendMessage({
+    type: "DESCRIBE_IMAGE_URL",
+    imageUrl: lastClickedImageUrl
+  });
+
+  hideScan();
+
+  if (!res?.ok) {
+    console.error("describe image error:", res?.error);
+    return;
+  }
+
+  const caption = String(res.caption || "").trim();
+  if (!caption) return;
+
+  speakWithElevenLabs(caption);
+}
+
+// ============================
 // messages from background:
 // - DETR results + scanning UI
 // - shortcut triggers
@@ -236,7 +280,6 @@ chrome.runtime.onMessage.addListener((msg) => {
 
   if (msg.type === "DETR_RESULT" || msg.type === "DETECTIONS_RESULT") {
     hideScan();
-    // assumes describeDetections exists elsewhere in your file/project like before
     const sentence = typeof describeDetections === "function"
       ? describeDetections(msg.detections || [])
       : "scan complete.";
@@ -257,6 +300,11 @@ chrome.runtime.onMessage.addListener((msg) => {
       return;
     }
     speakWithElevenLabs(selected);
+    return;
+  }
+
+  if (msg.type === "TRIGGER_DESCRIBE_IMAGE") {
+    describeLastClickedImage();
     return;
   }
 });
