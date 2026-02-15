@@ -7,8 +7,10 @@
 
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Vision Assist"
+    "default_title": "Screen Reader Assistant"
   },
+
+
 
   "options_page": "options.html",
 
@@ -24,29 +26,11 @@
     }
   ],
 
-  "permissions": [
-    "tabs",
-    "storage"
-  ],
+  "permissions": ["activeTab", "scripting", "tabs", "storage"],
 
   "host_permissions": [
     "<all_urls>",
     "https://router.huggingface.co/*",
     "https://api.elevenlabs.io/*"
-  ],
-
-  "commands": {
-    "visionassist-read-selection": {
-      "suggested_key": { "default": "Shift+R" },
-      "description": "Read highlighted text aloud"
-    },
-    "visionassist-describe-image": {
-      "suggested_key": { "default": "Shift+I" },
-      "description": "Describe hovered image aloud"
-    },
-    "visionassist-scan-screen": {
-      "suggested_key": { "default": "Shift+S" },
-      "description": "Scan the visible screen and describe it aloud"
-    }
-  }
+  ]
 }
