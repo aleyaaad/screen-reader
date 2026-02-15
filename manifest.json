@@ -13,6 +13,11 @@
 
   },
 
+  
+  "icons": {
+    "128": "Vision.png"
+  },
+
 
 
   "options_page": "options.html",
