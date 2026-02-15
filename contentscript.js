@@ -1,4 +1,4 @@
-// contentscript.js (option B + elevenlabs speak)
+// contentscript.js (shift shortcuts + elevenlabs speak)
 
 console.log("screen_reader contentscript loaded");
 
@@ -230,14 +230,12 @@ async function speakWithElevenLabs(text) {
 }
 
 // ============================
-// scan trigger
+// scan trigger (Shift+S)
 // ============================
 let lastScanAt = 0;
-let suppressScanUntil = 0;
 
 function triggerScan() {
   const now = Date.now();
-  if (now < suppressScanUntil) return;
   if (now - lastScanAt < 700) return;
   lastScanAt = now;
 
@@ -262,68 +260,26 @@ function triggerScan() {
   });
 }
 
-// (keep your existing dblclick trigger if you want)
+// (optional) keep dblclick scan if you still want it
 document.addEventListener("dblclick", triggerScan, true);
 
 // ============================
-// triple click = text only (optional, kept)
+// hover image tracking (Shift+I)
 // ============================
-(() => {
-  let clickCount = 0;
-  let clickTimer = null;
-  let lastTarget = null;
-
-  function pickText(e) {
-    const selected = window.getSelection?.().toString()?.trim();
-    if (selected) return selected;
-
-    const el = e?.target;
-    if (!el) return "";
-
-    let text = el.innerText?.trim() || el.textContent?.trim() || "";
-    if (text.length > 1200) text = text.slice(0, 1200) + "…";
-    return text;
-  }
-
-  document.addEventListener(
-    "click",
-    (e) => {
-      if (lastTarget && e.target !== lastTarget) clickCount = 0;
-      lastTarget = e.target;
-
-      clickCount += 1;
-
-      // suppress scan on click #2 so dblclick doesn't fire when triple-clicking
-      if (clickCount === 2) suppressScanUntil = Date.now() + 900;
-
-      if (clickTimer) clearTimeout(clickTimer);
-      clickTimer = setTimeout(() => {
-        clickCount = 0;
-        clickTimer = null;
-        lastTarget = null;
-      }, 450);
-
-      if (clickCount === 3) {
-        clickCount = 0;
-        if (clickTimer) clearTimeout(clickTimer);
-        clickTimer = null;
-
-        const text = pickText(e);
-        if (!text) return;
-
-        speakWithElevenLabs(text);
-      }
-    },
-    true
-  );
-})();
-
-// ============================
-// NEW: fast image describe (no screenshot)
-// click an image once to "select" it, then Shift+I
-// ============================
+let hoveredImageEl = null;
 let lastClickedImageUrl = "";
 
+// track hover
+document.addEventListener(
+  "mousemove",
+  (e) => {
+    const img = e.target?.closest?.("img");
+    hoveredImageEl = img || null;
+  },
+  true
+);
+
+// fallback: track last clicked image too
 document.addEventListener(
   "click",
   (e) => {
@@ -334,9 +290,16 @@ document.addEventListener(
   true
 );
 
-async function describeLastClickedImage() {
-  if (!lastClickedImageUrl) {
-    console.warn("no image clicked yet");
+function getHoveredOrClickedImageUrl() {
+  const hoverUrl = hoveredImageEl?.currentSrc || hoveredImageEl?.src || "";
+  if (hoverUrl) return hoverUrl;
+  return lastClickedImageUrl || "";
+}
+
+async function describeHoveredImage() {
+  const imageUrl = getHoveredOrClickedImageUrl();
+  if (!imageUrl) {
+    console.warn("no image hovered (or clicked) yet");
     return;
   }
 
@@ -344,7 +307,7 @@ async function describeLastClickedImage() {
 
   const res = await chrome.runtime.sendMessage({
     type: "DESCRIBE_IMAGE_URL",
-    imageUrl: lastClickedImageUrl
+    imageUrl
   });
 
   hideScan();
@@ -361,9 +324,9 @@ async function describeLastClickedImage() {
 }
 
 // ============================
-// Shift shortcuts (your request)
-// Shift+R = read selected text
-// Shift+I = describe clicked image
+// Shift shortcuts
+// Shift+R = read selected text (highlighted)
+// Shift+I = describe hovered image (blip)
 // Shift+S = scan screen
 // ============================
 function isTypingTarget(el) {
@@ -386,6 +349,8 @@ document.addEventListener(
     const key = (e.key || "").toLowerCase();
 
     if (key === "r") {
+      e.preventDefault();
+      e.stopPropagation();
       const selected = window.getSelection?.().toString()?.trim();
       if (!selected) return;
       speakWithElevenLabs(selected);
@@ -393,11 +358,15 @@ document.addEventListener(
     }
 
     if (key === "i") {
-      describeLastClickedImage();
+      e.preventDefault();
+      e.stopPropagation();
+      describeHoveredImage();
       return;
     }
 
     if (key === "s") {
+      e.preventDefault();
+      e.stopPropagation();
       triggerScan();
       return;
     }
