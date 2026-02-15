@@ -1,7 +1,9 @@
+// contentscript.js (option B + elevenlabs speak)
+
 console.log("screen_reader contentscript loaded");
 
 // ============================
-// scanner overlay (objects)
+// scanner overlay
 // ============================
 const SCAN_ID = "sr-scan-overlay";
 const STYLE_ID = "sr-scan-style";
@@ -142,10 +144,33 @@ function drawDetections(detections = []) {
 }
 
 // ============================
-// ElevenLabs playback (queue + wait until ended)
+// build a short sentence to speak
+// ============================
+function describeDetections(detections = []) {
+  const counts = new Map();
+
+  for (const det of detections) {
+    const score = det?.score ?? 0;
+    if (score < 0.3) continue;
+    const label = String(det?.label || "").trim();
+    if (!label) continue;
+    counts.set(label, (counts.get(label) || 0) + 1);
+  }
+
+  if (counts.size === 0) return "i don't see anything clearly.";
+
+  const parts = [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([label, n]) => `${n} ${n === 1 ? label : label + "s"}`);
+
+  return `on screen i detect ${parts.join(", ")}.`;
+}
+
+// ============================
+// ElevenLabs playback (with fallback if autoplay blocks)
 // ============================
 let srAudioEl = null;
-let srSpeakChain = Promise.resolve();
 
 function ensureAudioEl() {
   if (!srAudioEl) {
@@ -158,6 +183,7 @@ function ensureAudioEl() {
 }
 
 function showTapToPlay(src) {
+  // small clickable pill
   const id = "sr-tap-play";
   document.getElementById(id)?.remove();
 
@@ -179,240 +205,76 @@ function showTapToPlay(src) {
     cursor: pointer;
   `;
 
+  btn.onclick = async () => {
+    btn.remove();
+    const a = ensureAudioEl();
+    a.src = src;
+    try { await a.play(); } catch (e) { console.error("play failed:", e); }
+  };
+
   document.documentElement.appendChild(btn);
-
-  return new Promise((resolve) => {
-    btn.onclick = async () => {
-      btn.remove();
-      const a = ensureAudioEl();
-      a.src = src;
-      try {
-        await a.play();
-        resolve(true);
-      } catch (e) {
-        console.error("play failed:", e);
-        resolve(false);
-      }
-    };
-
-    setTimeout(() => {
-      btn.remove();
-      resolve(false);
-    }, 12000);
-  });
+  setTimeout(() => btn.remove(), 8000);
 }
 
-function waitForEnded(audioEl) {
-  return new Promise((resolve) => {
-    const done = () => {
-      audioEl.removeEventListener("ended", done);
-      audioEl.removeEventListener("error", done);
-      resolve();
-    };
-    audioEl.addEventListener("ended", done, { once: true });
-    audioEl.addEventListener("error", done, { once: true });
-  });
-}
+async function speakWithElevenLabs(text) {
+  const res = await chrome.runtime.sendMessage({ type: "SPEAK_TEXT", text });
 
-async function playSrcAndWait(src) {
+  if (!res?.ok) {
+    console.error("tts error:", res?.error);
+    return;
+  }
+
+  const src = `data:audio/mpeg;base64,${res.audioB64}`;
   const a = ensureAudioEl();
-
-  // stop anything currently playing
-  try {
-    a.pause();
-    a.currentTime = 0;
-  } catch (_) {}
-
   a.src = src;
 
   try {
     await a.play();
-  } catch (_) {
-    const ok = await showTapToPlay(src);
-    if (!ok) return;
-  }
-
-  await waitForEnded(a);
-}
-
-function speakWithElevenLabs(text) {
-  const t = String(text || "").trim();
-  if (!t) return Promise.resolve();
-
-  // chain all speech so chunks don’t overlap
-  srSpeakChain = srSpeakChain.then(async () => {
-    const res = await chrome.runtime.sendMessage({ type: "SPEAK_TEXT", text: t });
-    if (!res?.ok) {
-      console.error("tts error:", res?.error);
-      return;
-    }
-    const src = `data:audio/mpeg;base64,${res.audioB64}`;
-    await playSrcAndWait(src);
-  });
-
-  return srSpeakChain;
-}
-
-// ============================
-// object summary speech
-// ============================
-function summarizeDetections(detections = []) {
-  const good = detections
-    .filter((d) => (d?.score ?? 0) >= 0.4 && d?.label)
-    .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
-    .slice(0, 6);
-
-  if (!good.length) return "i couldn't confidently detect any objects.";
-
-  // count labels
-  const counts = new Map();
-  for (const d of good) {
-    const label = String(d.label).toLowerCase();
-    counts.set(label, (counts.get(label) || 0) + 1);
-  }
-
-  const parts = [];
-  for (const [label, n] of counts.entries()) {
-    parts.push(n === 1 ? label : `${n} ${label}s`);
-  }
-
-  return `i see ${parts.join(", ")}.`;
-}
-
-// ============================
-// NEW FEATURE: read visible text (triple click)
-// ============================
-function isElementVisible(el) {
-  if (!el) return false;
-  const style = window.getComputedStyle(el);
-  if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return false;
-  const r = el.getBoundingClientRect();
-  return r.width > 0 && r.height > 0 && r.bottom > 0 && r.top < window.innerHeight;
-}
-
-function cleanText(s) {
-  return String(s || "")
-    .replace(/\s+/g, " ")
-    .replace(/[\u200B-\u200D\uFEFF]/g, "")
-    .trim();
-}
-
-function getVisibleText({ maxChars = 2200 } = {}) {
-  const root = document.querySelector("main") || document.querySelector("article") || document.body;
-  const nodes = root.querySelectorAll("h1,h2,h3,h4,h5,h6,p,li,blockquote,figcaption");
-
-  const chunks = [];
-  const seen = new Set();
-
-  for (const el of nodes) {
-    if (!isElementVisible(el)) continue;
-    if (el.closest("nav,footer,header,aside")) continue;
-
-    const t = cleanText(el.innerText || el.textContent || "");
-    if (!t) continue;
-    if (t.length < 20) continue;
-
-    if (seen.has(t)) continue;
-    seen.add(t);
-
-    chunks.push(t);
-    if (chunks.join(" ").length >= maxChars) break;
-  }
-
-  const text = cleanText(chunks.join(" "));
-  return text.slice(0, maxChars);
-}
-
-function chunkForTTS(text, chunkSize = 900) {
-  const parts = [];
-  let current = "";
-
-  const sentences = String(text).split(/(?<=[.!?])\s+/);
-
-  for (const s of sentences) {
-    const next = (current + " " + s).trim();
-    if (next.length > chunkSize) {
-      if (current.trim()) parts.push(current.trim());
-      current = s.trim();
-    } else {
-      current = next;
-    }
-  }
-  if (current.trim()) parts.push(current.trim());
-
-  if (parts.length === 0 && String(text).trim()) parts.push(String(text).trim().slice(0, chunkSize));
-  return parts;
-}
-
-async function readVisibleTextAloud() {
-  const text = getVisibleText({ maxChars: 2400 });
-  if (!text) {
-    await speakWithElevenLabs("i couldn't find readable text on the visible part of this page.");
-    return;
-  }
-
-  const chunks = chunkForTTS(text, 900);
-
-  await speakWithElevenLabs("reading visible text.");
-  for (const chunk of chunks) {
-    await speakWithElevenLabs(chunk);
+  } catch (e) {
+    // autoplay policy sometimes blocks if async; fallback button fixes it
+    console.warn("autoplay blocked, showing tap-to-play");
+    showTapToPlay(src);
   }
 }
 
 // ============================
-// CLICK TRIGGERS (FIXED)
-// 2 clicks = scan objects
-// 3 clicks = read visible text
+// dblclick trigger (ONLY trigger)
 // ============================
-let clickCount = 0;
-let clickTimer = null;
-
-function handleDoubleClickAction() {
-  showScan("scanning screen…");
-
-  if (scanTimeoutId) clearTimeout(scanTimeoutId);
-  scanTimeoutId = setTimeout(() => {
-    console.log("scan timed out (no response)");
-    hideScan();
-  }, 15000);
-
-  chrome.runtime.sendMessage({ type: "CAPTURE_SCREEN" }, (resp) => {
-    if (chrome.runtime.lastError) {
-      console.error("sendMessage error:", chrome.runtime.lastError.message);
-      hideScan();
-      return;
-    }
-    if (resp?.ok === false) {
-      console.error("background error:", resp.error);
-      hideScan();
-    }
-  });
-}
+let lastScanAt = 0;
 
 document.addEventListener(
-  "click",
-  (e) => {
-    // count clicks ourselves so triple-click DOESN’T fire the double-click feature
-    clickCount += 1;
+  "dblclick",
+  () => {
+    const now = Date.now();
+    if (now - lastScanAt < 700) return;
+    lastScanAt = now;
 
-    if (clickTimer) clearTimeout(clickTimer);
+    showScan("scanning screen…");
 
-    clickTimer = setTimeout(() => {
-      const n = clickCount;
-      clickCount = 0;
+    // failsafe only if nothing returns
+    if (scanTimeoutId) clearTimeout(scanTimeoutId);
+    scanTimeoutId = setTimeout(() => {
+      console.log("scan timed out (no response)");
+      hideScan();
+    }, 15000);
 
-      if (n === 2) {
-        handleDoubleClickAction();
-      } else if (n >= 3) {
-        readVisibleTextAloud();
+    chrome.runtime.sendMessage({ type: "CAPTURE_SCREEN" }, (resp) => {
+      if (chrome.runtime.lastError) {
+        console.error("sendMessage error:", chrome.runtime.lastError.message);
+        hideScan();
       }
-    }, 320);
+      if (resp?.ok === false) {
+        console.error("background error:", resp.error);
+        hideScan();
+      }
+    });
   },
   true
 );
 
 // ============================
-// results from background
+// stop scanning ONLY when results arrive (option B)
+// draw boxes, then speak
 // ============================
 chrome.runtime.onMessage.addListener((msg) => {
   if (!msg?.type) return;
@@ -425,17 +287,16 @@ chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === "ERROR") {
     console.error("scan error:", msg.error);
     hideScan();
-    speakWithElevenLabs("something went wrong while scanning.");
     return;
   }
 
   if (msg.type === "DETR_RESULT" || msg.type === "DETECTIONS_RESULT") {
     const detections = msg.detections || [];
-    drawDetections(detections);
-    hideScan();
 
-    // speak object summary (short + helpful)
-    const summary = summarizeDetections(detections);
-    speakWithElevenLabs(summary);
+    drawDetections(detections); // boxes first
+    hideScan();                 // scan stops once boxes appear
+
+    const sentence = describeDetections(detections);
+    speakWithElevenLabs(sentence); // then speak
   }
 });
