@@ -266,6 +266,96 @@ chrome.runtime.onMessage.addListener((msg) => {
     speakWithElevenLabs(selected);
     return;
   }
+<<<<<<< HEAD
 });
 
+=======
+  // ============================
+// triple click anywhere -> read text aloud (elevenlabs)
+// uses selected text first (triple click usually selects a paragraph)
+// falls back to clicked element text
+// ============================
+(() => {
+  let clickCount = 0;
+  let clickTimer = null;
+  let lastTarget = null;
+
+  function pickTextFromEvent(e) {
+    // 1) selected text is best
+    const selected = window.getSelection?.().toString()?.trim();
+    if (selected) return selected;
+
+    // 2) fallback: clicked element's visible text
+    let el = e?.target;
+    if (!el) return "";
+
+    const badTags = new Set(["SCRIPT", "STYLE", "NOSCRIPT"]);
+    if (el.tagName && badTags.has(el.tagName)) return "";
+
+    let text = "";
+    if (typeof el.innerText === "string") text = el.innerText.trim();
+    if (!text && typeof el.textContent === "string") text = el.textContent.trim();
+
+    // walk up a few parents if the clicked node has no meaningful text
+    let hops = 0;
+    while ((!text || text.length < 2) && el && hops < 3) {
+      el = el.parentElement;
+      if (!el) break;
+      if (el.tagName && badTags.has(el.tagName)) break;
+      if (typeof el.innerText === "string") text = el.innerText.trim();
+      hops++;
+    }
+
+    // keep it readable + not insanely long
+    if (text.length > 1200) text = text.slice(0, 1200) + "…";
+    return text;
+  }
+
+  document.addEventListener(
+    "click",
+    (e) => {
+      // keep triple-clicks to same target; reset if user clicks elsewhere
+      if (lastTarget && e.target !== lastTarget) clickCount = 0;
+      lastTarget = e.target;
+
+      clickCount += 1;
+
+      if (clickTimer) clearTimeout(clickTimer);
+      clickTimer = setTimeout(() => {
+        clickCount = 0;
+        clickTimer = null;
+        lastTarget = null;
+      }, 450);
+
+      if (clickCount === 3) {
+        // prevent your dblclick scan from firing on click #2/#3
+        suppressScanUntil = Date.now() + 600;
+
+        // stop counting
+        clickCount = 0;
+        if (clickTimer) clearTimeout(clickTimer);
+        clickTimer = null;
+
+        const text = pickTextFromEvent(e);
+        if (!text) return;
+
+        // use your existing elevenlabs pipeline
+        speakWithElevenLabs(text);
+      }
+    },
+    true // capture so we still get the click even if the site stops propagation
+  );
+})();
+
+
+  if (msg.type === "DETR_RESULT" || msg.type === "DETECTIONS_RESULT") {
+    const detections = msg.detections || [];
+
+    drawDetections(detections); // boxes first
+    hideScan();                 // scan stops once boxes appear
+
+    const sentence = describeDetections(detections);
+    speakWithElevenLabs(sentence); // then speak
+  }
+>>>>>>> 72cbb1d85ab0201dd855d95f02b480eb8383fc3b
 });
