@@ -7,10 +7,8 @@
 
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Screen Reader Assistant",
-    "default_icon": {
-      "128": "icons/icon128.png"
-    }
+    "default_title": "Screen Reader Assistant"
+    
   },
 
   "icons": {
