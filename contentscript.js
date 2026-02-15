@@ -1,4 +1,4 @@
-// contentscript.js (option B + elevenlabs speak)
+// contentscript.js (triple click read + dblclick scan + hover image + shift+i describe)
 console.log("screen_reader contentscript loaded");
 
 // ============================
@@ -152,7 +152,7 @@ function drawDetections(detections = []) {
 }
 
 // ============================
-// build a short sentence to speak
+// build a short sentence to speak (from DETR boxes)
 // ============================
 function describeDetections(detections = []) {
   const counts = new Map();
@@ -167,9 +167,7 @@ function describeDetections(detections = []) {
     counts.set(label, (counts.get(label) || 0) + 1);
   }
 
-  if (counts.size === 0) {
-    return "i don't see anything clearly.";
-  }
+  if (counts.size === 0) return "i don't see anything clearly.";
 
   const parts = [...counts.entries()]
     .sort((a, b) => b[1] - a[1])
@@ -180,7 +178,7 @@ function describeDetections(detections = []) {
 }
 
 // ============================
-// ElevenLabs playback (with fallback if autoplay blocks)
+// ElevenLabs playback (fallback if autoplay blocks)
 // ============================
 let srAudioEl = null;
 
@@ -232,10 +230,7 @@ cursor: pointer;
 }
 
 async function speakWithElevenLabs(text) {
-  const res = await chrome.runtime.sendMessage({
-    type: "SPEAK_TEXT",
-    text
-  });
+  const res = await chrome.runtime.sendMessage({ type: "SPEAK_TEXT", text });
 
   if (!res?.ok) {
     console.error("tts error:", res?.error);
@@ -255,17 +250,16 @@ async function speakWithElevenLabs(text) {
 }
 
 // ============================
-// dblclick trigger (ONLY trigger)
+// dblclick trigger -> capture full screen -> DETR in background
 // ============================
 let lastScanAt = 0;
-let suppressScanUntil = 0; // used only to prevent dblclick scan when user is triple-clicking to read text
-
+let suppressScanUntil = 0;
 
 document.addEventListener(
   "dblclick",
   () => {
     const now = Date.now();
-    if (now < suppressScanUntil) return; // don't scan if we're in a triple-click read
+    if (now < suppressScanUntil) return;
     if (now - lastScanAt < 700) return;
 
     lastScanAt = now;
@@ -282,6 +276,7 @@ document.addEventListener(
       if (chrome.runtime.lastError) {
         console.error("sendMessage error:", chrome.runtime.lastError.message);
         hideScan();
+        return;
       }
       if (resp?.ok === false) {
         console.error("background error:", resp.error);
@@ -293,69 +288,7 @@ document.addEventListener(
 );
 
 // ============================
-// stop scanning ONLY when results arrive (option B)
-// draw boxes, then speak
-// ============================
-// ============================
-// triple click anywhere -> read text aloud (elevenlabs)
-// uses selected text first (triple click usually selects a paragraph)
-// falls back to clicked element text
-// ============================
-(() => {
-  let clickCount = 0;
-  let clickTimer = null;
-  let lastTarget = null;
-
-  function pickTextFromEvent(e) {
-    // 1) selected text is best
-    const selected = window.getSelection?.().toString()?.trim();
-    if (selected) return selected;
-
-    // 2) fallback: clicked element's visible text
-    let el = e?.target;
-    if (!el) return "";
-
-    const badTags = new Set(["SCRIPT", "STYLE", "NOSCRIPT"]);
-    if (el.tagName && badTags.has(el.tagName)) return "";
-
-    let text = "";
-    if (typeof el.innerText === "string") text = el.innerText.trim();
-    if (!text && typeof el.textContent === "string") text = el.textContent.trim();
-
-    // walk up a few parents if the clicked node has no meaningful text
-    let hops = 0;
-    while ((!text || text.length < 2) && el && hops < 3) {
-      el = el.parentElement;
-      if (!el) break;
-      if (el.tagName && badTags.has(el.tagName)) break;
-      if (typeof el.innerText === "string") text = el.innerText.trim();
-      hops++;
-    }
-
-    // keep it readable + not insanely long
-    if (text.length > 1200) text = text.slice(0, 1200) + "…";
-    return text;
-  }
-
-  document.addEventListener(
-    "click",
-    (e) => {
-      // keep triple-clicks to same target; reset if user clicks elsewhere
-      if (lastTarget && e.target !== lastTarget) clickCount = 0;
-      lastTarget = e.target;
-
-      clickCount += 1;
-
-      if (clickTimer) clearTimeout(clickTimer);
-      clickTimer = setTimeout(() => {
-        clickCount = 0;
-        clickTimer = null;
-        lastTarget = null;
-      }, 450);
-
-     // ============================
-// triple click anywhere -> read text aloud (elevenlabs)
-// FIX: suppress dblclick scan starting at click #2 so images/detr never triggers
+// triple click anywhere -> read text aloud
 // ============================
 (() => {
   let clickCount = 0;
@@ -397,11 +330,8 @@ document.addEventListener(
 
       clickCount += 1;
 
-      // key fix: as soon as user hits 2 clicks, suppress the dblclick scan
-      // (dblclick event happens right after click #2)
-      if (clickCount === 2) {
-        suppressScanUntil = Date.now() + 900; // a bit longer to be safe
-      }
+      // as soon as user hits 2 clicks, suppress dblclick scan
+      if (clickCount === 2) suppressScanUntil = Date.now() + 900;
 
       if (clickTimer) clearTimeout(clickTimer);
       clickTimer = setTimeout(() => {
@@ -425,19 +355,118 @@ document.addEventListener(
   );
 })();
 
-    },
-    true // capture so we still get the click even if the site stops propagation
-  );
-})();
+// ============================
+// hover image + shift+i -> describe THAT image with blip -> speak
+// ============================
+let srHoveredImageEl = null;
+let srLastDescribeAt = 0;
 
+function extractImageUrlFromElement(el) {
+  if (!el) return "";
 
-  if (msg.type === "DETR_RESULT" || msg.type === "DETECTIONS_RESULT") {
-    const detections = msg.detections || [];
-
-    drawDetections(detections); // boxes first
-    hideScan(); // scan stops once boxes appear
-
-    const sentence = describeDetections(detections);
-    speakWithElevenLabs(sentence); // then speak
+  // direct <img>
+  if (el.tagName === "IMG") {
+    const src = el.currentSrc || el.src || "";
+    return src;
   }
 
+  // walk up a bit in case user hovers inside a <picture> / wrapper
+  let cur = el;
+  for (let i = 0; i < 3 && cur; i++) {
+    if (cur.tagName === "IMG") {
+      const src = cur.currentSrc || cur.src || "";
+      return src;
+    }
+
+    const cs = window.getComputedStyle(cur);
+    const bg = cs?.backgroundImage || "";
+    // background-image: url("...")
+    const match = bg.match(/url\(["']?(.*?)["']?\)/i);
+    if (match && match[1]) return match[1];
+
+    cur = cur.parentElement;
+  }
+
+  return "";
+}
+
+document.addEventListener(
+  "mousemove",
+  (e) => {
+    // store whatever element the mouse is currently over
+    srHoveredImageEl = e?.target || null;
+  },
+  true
+);
+
+document.addEventListener(
+  "keydown",
+  async (e) => {
+    // ignore if user is typing in inputs
+    const t = e?.target;
+    const tag = t?.tagName;
+    const typing =
+      tag === "INPUT" ||
+      tag === "TEXTAREA" ||
+      t?.isContentEditable === true;
+
+    if (typing) return;
+
+    // shift+i (uppercase I or lowercase i)
+    if (!(e.shiftKey && (e.key === "I" || e.key === "i"))) return;
+
+    const now = Date.now();
+    if (now - srLastDescribeAt < 800) return; // basic spam guard
+    srLastDescribeAt = now;
+
+    const url = extractImageUrlFromElement(srHoveredImageEl);
+    if (!url) {
+      speakWithElevenLabs("i'm not hovering an image right now.");
+      return;
+    }
+
+    showScan("describing image…");
+    if (scanTimeoutId) clearTimeout(scanTimeoutId);
+    scanTimeoutId = setTimeout(() => hideScan(), 15000);
+
+    chrome.runtime.sendMessage(
+      { type: "DESCRIBE_IMAGE", imageUrl: url },
+      (resp) => {
+        if (chrome.runtime.lastError) {
+          console.error("describe sendMessage error:", chrome.runtime.lastError.message);
+          hideScan();
+          return;
+        }
+        if (resp?.ok === false) {
+          console.error("describe background error:", resp.error);
+          hideScan();
+        }
+      }
+    );
+  },
+  true
+);
+
+// ============================
+// results from background
+// ============================
+chrome.runtime.onMessage.addListener((msg) => {
+  if (!msg || !msg.type) return;
+
+  // DETR results from screen scan
+  if (msg.type === "DETR_RESULT" || msg.type === "DETECTIONS_RESULT") {
+    const detections = msg.detections || [];
+    drawDetections(detections);
+    hideScan();
+    speakWithElevenLabs(describeDetections(detections));
+    return;
+  }
+
+  // BLIP caption result for hovered image
+  if (msg.type === "IMAGE_DESC_RESULT") {
+    hideScan();
+    const caption = (msg.caption || "").trim();
+    speakWithElevenLabs(caption || "i couldn't describe that image.");
+    return;
+  }
+});
