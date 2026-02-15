@@ -31,17 +31,24 @@
   "commands": {
   "scan-screen": {
     "suggested_key": {
-      "default": "Ctrl+Shift+S",
+      "default": "Alt+Shift+S",
       "mac": "Command+Shift+S"
     },
     "description": "Scan screen for objects (DETR) and speak results"
   },
   "read-selection": {
     "suggested_key": {
-      "default": "Ctrl+Shift+R",
+      "default": "Alt+Shift+R",
       "mac": "Command+Shift+R"
     },
     "description": "Read selected text aloud"
+  },
+  "describe-image": {
+    "suggested_key": {
+      "default": "Alt+Shift+I",
+      "mac": "Command+Shift+I"
+    },
+    "description": "Describe the last clicked image"
   }
 },
 

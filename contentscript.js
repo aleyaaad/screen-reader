@@ -307,4 +307,43 @@ chrome.runtime.onMessage.addListener((msg) => {
     describeLastClickedImage();
     return;
   }
+  // ============================
+// single-key controls (click -> press key)
+// R = read selected text
+// I = describe last clicked image
+// S = scan screen
+// (won't trigger while typing)
+// ============================
+function isTypingTarget(el) {
+  if (!el) return false;
+  const tag = el.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+  return !!el.isContentEditable;
+}
+
+document.addEventListener("keydown", (e) => {
+  // ignore if user is typing in a field
+  if (isTypingTarget(e.target)) return;
+
+  // ignore if modifiers are held (so we don't fight real shortcuts)
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+  const key = (e.key || "").toLowerCase();
+
+  if (key === "r") {
+    const selected = window.getSelection?.().toString()?.trim();
+    if (!selected) return;
+    speakWithElevenLabs(selected);
+  }
+
+  if (key === "i") {
+    // describe last clicked image (you already store lastClickedImageUrl)
+    describeLastClickedImage();
+  }
+
+  if (key === "s") {
+    triggerScan();
+  }
+}, true);
+
 });
