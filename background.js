@@ -33,9 +33,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
         const detections = await runDetr(dataUrl);
 
-        // option B behavior: content script hides scan when results arrive
         await safeSend(tabId, { type: "DETR_RESULT", detections });
-
         sendResponse({ ok: true, detections });
         return;
       }
@@ -54,8 +52,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse({ ok: true, audioB64 });
         return;
       }
+
+      sendResponse({ ok: false, error: "Unknown message type." });
     } catch (err) {
       console.error("background error:", err);
+      try {
+        const tabId = sender?.tab?.id;
+        if (tabId) await safeSend(tabId, { type: "ERROR", error: String(err?.message || err) });
+      } catch (_) {}
       sendResponse({ ok: false, error: String(err?.message || err) });
     }
   })();
@@ -74,9 +78,9 @@ async function runDetr(dataUrl) {
       method: "POST",
       headers: {
         Authorization: DETR_API_KEY,
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
       },
-      body: JSON.stringify({ inputs: base64 })
+      body: JSON.stringify({ inputs: base64 }),
     });
 
     if (resp.ok) {
@@ -86,10 +90,12 @@ async function runDetr(dataUrl) {
 
     const text = await resp.text().catch(() => "");
     let parsed = null;
-    try { parsed = JSON.parse(text); } catch (_) {}
+    try {
+      parsed = JSON.parse(text);
+    } catch (_) {}
 
     if (resp.status === 503 && parsed?.estimated_time) {
-      const waitMs = Math.ceil(parsed.estimated_time * 1000) + 300;
+      const waitMs = Math.ceil(parsed.estimated_time * 1000) + 350;
       console.log(`HF model loading, waiting ${waitMs}ms (attempt ${attempt})`);
       await new Promise((r) => setTimeout(r, waitMs));
       continue;
@@ -105,12 +111,8 @@ async function runDetr(dataUrl) {
 // ElevenLabs: text -> mp3 -> base64
 // --------------------
 async function elevenTtsToBase64(text, { voiceId }) {
-  if (!ELEVEN_API_KEY || ELEVEN_API_KEY.includes("YOUR_ELEVEN")) {
-    throw new Error("Missing ElevenLabs API key in background.js");
-  }
-  if (!voiceId || voiceId.includes("YOUR_VOICE")) {
-    throw new Error("Missing ElevenLabs voice id in background.js");
-  }
+  if (!ELEVEN_API_KEY) throw new Error("Missing ElevenLabs API key in background.js");
+  if (!voiceId) throw new Error("Missing ElevenLabs voice id in background.js");
 
   const url = `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`;
 
@@ -119,7 +121,7 @@ async function elevenTtsToBase64(text, { voiceId }) {
     headers: {
       "xi-api-key": ELEVEN_API_KEY,
       "Content-Type": "application/json",
-      "Accept": "audio/mpeg"
+      Accept: "audio/mpeg",
     },
     body: JSON.stringify({
       text,
@@ -128,9 +130,9 @@ async function elevenTtsToBase64(text, { voiceId }) {
         stability: 0.55,
         similarity_boost: 0.8,
         style: 0.0,
-        use_speaker_boost: true
-      }
-    })
+        use_speaker_boost: true,
+      },
+    }),
   });
 
   if (!resp.ok) {
