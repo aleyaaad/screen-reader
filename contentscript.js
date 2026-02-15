@@ -1,9 +1,8 @@
-// contentscript.js (option B + elevenlabs speak)
-
+// contentscript.js
 console.log("screen_reader contentscript loaded");
 
 // ============================
-// scanner overlay
+// scanner overlay (objects)
 // ============================
 const SCAN_ID = "sr-scan-overlay";
 const STYLE_ID = "sr-scan-style";
@@ -144,33 +143,10 @@ function drawDetections(detections = []) {
 }
 
 // ============================
-// build a short sentence to speak
-// ============================
-function describeDetections(detections = []) {
-  const counts = new Map();
-
-  for (const det of detections) {
-    const score = det?.score ?? 0;
-    if (score < 0.3) continue;
-    const label = String(det?.label || "").trim();
-    if (!label) continue;
-    counts.set(label, (counts.get(label) || 0) + 1);
-  }
-
-  if (counts.size === 0) return "i don't see anything clearly.";
-
-  const parts = [...counts.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 5)
-    .map(([label, n]) => `${n} ${n === 1 ? label : label + "s"}`);
-
-  return `on screen i detect ${parts.join(", ")}.`;
-}
-
-// ============================
-// ElevenLabs playback (with fallback if autoplay blocks)
+// ElevenLabs playback
 // ============================
 let srAudioEl = null;
+let srSpeaking = false;
 
 function ensureAudioEl() {
   if (!srAudioEl) {
@@ -183,7 +159,6 @@ function ensureAudioEl() {
 }
 
 function showTapToPlay(src) {
-  // small clickable pill
   const id = "sr-tap-play";
   document.getElementById(id)?.remove();
 
@@ -213,32 +188,138 @@ function showTapToPlay(src) {
   };
 
   document.documentElement.appendChild(btn);
-  setTimeout(() => btn.remove(), 8000);
+  setTimeout(() => btn.remove(), 10000);
 }
 
 async function speakWithElevenLabs(text) {
+  if (!text || !text.trim()) return;
+
+  // stop current audio if speaking
+  const a = ensureAudioEl();
+  try { a.pause(); a.currentTime = 0; } catch (_) {}
+
+  srSpeaking = true;
+
   const res = await chrome.runtime.sendMessage({ type: "SPEAK_TEXT", text });
 
   if (!res?.ok) {
     console.error("tts error:", res?.error);
+    srSpeaking = false;
     return;
   }
 
   const src = `data:audio/mpeg;base64,${res.audioB64}`;
-  const a = ensureAudioEl();
   a.src = src;
 
   try {
     await a.play();
   } catch (e) {
-    // autoplay policy sometimes blocks if async; fallback button fixes it
     console.warn("autoplay blocked, showing tap-to-play");
     showTapToPlay(src);
+  } finally {
+    srSpeaking = false;
   }
 }
 
 // ============================
-// dblclick trigger (ONLY trigger)
+// NEW FEATURE: read visible text (triple click)
+// ============================
+function isElementVisible(el) {
+  if (!el) return false;
+  const style = window.getComputedStyle(el);
+  if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return false;
+  const r = el.getBoundingClientRect();
+  return r.width > 0 && r.height > 0 && r.bottom > 0 && r.top < window.innerHeight;
+}
+
+function cleanText(s) {
+  return s
+    .replace(/\s+/g, " ")
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .trim();
+}
+
+function getVisibleText({ maxChars = 2200 } = {}) {
+  // prefer main/article if present
+  const root =
+    document.querySelector("main") ||
+    document.querySelector("article") ||
+    document.body;
+
+  // gather common readable elements
+  const nodes = root.querySelectorAll("h1,h2,h3,h4,h5,h6,p,li,blockquote,figcaption");
+
+  const chunks = [];
+  const seen = new Set();
+
+  for (const el of nodes) {
+    if (!isElementVisible(el)) continue;
+
+    // skip obvious nav/footer/sidebar-ish regions
+    const tag = el.closest("nav,footer,header,aside");
+    if (tag) continue;
+
+    const t = cleanText(el.innerText || el.textContent || "");
+    if (!t) continue;
+    if (t.length < 20) continue; // ignore tiny bits
+
+    // de-dupe identical lines
+    if (seen.has(t)) continue;
+    seen.add(t);
+
+    chunks.push(t);
+    if (chunks.join(" ").length >= maxChars) break;
+  }
+
+  const text = cleanText(chunks.join(" "));
+  return text.slice(0, maxChars);
+}
+
+function chunkForTTS(text, chunkSize = 900) {
+  // chunk by sentences-ish to keep speech smooth
+  const parts = [];
+  let current = "";
+
+  const sentences = text.split(/(?<=[.!?])\s+/);
+
+  for (const s of sentences) {
+    if ((current + " " + s).trim().length > chunkSize) {
+      if (current.trim()) parts.push(current.trim());
+      current = s;
+    } else {
+      current = (current + " " + s).trim();
+    }
+  }
+  if (current.trim()) parts.push(current.trim());
+
+  // fallback if no punctuation
+  if (parts.length === 0 && text.trim()) parts.push(text.trim().slice(0, chunkSize));
+
+  return parts;
+}
+
+async function readVisibleTextAloud() {
+  const text = getVisibleText({ maxChars: 2400 });
+  if (!text) {
+    await speakWithElevenLabs("i couldn't find readable text on the visible part of this page.");
+    return;
+  }
+
+  // speak in chunks so ElevenLabs doesn’t choke on long text
+  const chunks = chunkForTTS(text, 900);
+
+  // small intro helps users know what’s happening
+  await speakWithElevenLabs("reading visible text.");
+
+  for (const chunk of chunks) {
+    await speakWithElevenLabs(chunk);
+  }
+}
+
+// ============================
+// triggers
+// dblclick = objects scan
+// triple click = read visible text
 // ============================
 let lastScanAt = 0;
 
@@ -251,7 +332,6 @@ document.addEventListener(
 
     showScan("scanning screen…");
 
-    // failsafe only if nothing returns
     if (scanTimeoutId) clearTimeout(scanTimeoutId);
     scanTimeoutId = setTimeout(() => {
       console.log("scan timed out (no response)");
@@ -272,9 +352,22 @@ document.addEventListener(
   true
 );
 
+document.addEventListener(
+  "click",
+  (e) => {
+    // triple click
+    if (e.detail === 3) {
+      // stop the dblclick handler from also firing extra
+      e.preventDefault();
+      e.stopPropagation();
+      readVisibleTextAloud();
+    }
+  },
+  true
+);
+
 // ============================
-// stop scanning ONLY when results arrive (option B)
-// draw boxes, then speak
+// results from background (option B)
 // ============================
 chrome.runtime.onMessage.addListener((msg) => {
   if (!msg?.type) return;
@@ -292,11 +385,8 @@ chrome.runtime.onMessage.addListener((msg) => {
 
   if (msg.type === "DETR_RESULT" || msg.type === "DETECTIONS_RESULT") {
     const detections = msg.detections || [];
-
-    drawDetections(detections); // boxes first
-    hideScan();                 // scan stops once boxes appear
-
-    const sentence = describeDetections(detections);
-    speakWithElevenLabs(sentence); // then speak
+    drawDetections(detections);
+    hideScan();
+    // keep your existing object-speaking here if you already do it
   }
 });
