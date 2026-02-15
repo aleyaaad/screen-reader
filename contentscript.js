@@ -1,4 +1,4 @@
-// contentscript.js (triple click read + dblclick scan + hover image + shift+i describe)
+// contentscript.js (shift+i scan + shift+r read + hover image + shift+d describe)
 console.log("screen_reader contentscript loaded");
 
 // ============================
@@ -250,113 +250,79 @@ async function speakWithElevenLabs(text) {
 }
 
 // ============================
-// dblclick trigger -> capture full screen -> DETR in background
+// keyboard triggers
+// shift+i -> capture full screen -> DETR in background
+// shift+r -> read nearby text aloud
 // ============================
 let lastScanAt = 0;
-let suppressScanUntil = 0;
+let lastReadAt = 0;
+let srLastTargetEl = null;
 
-document.addEventListener(
-  "dblclick",
-  () => {
-    const now = Date.now();
-    if (now < suppressScanUntil) return;
-    if (now - lastScanAt < 700) return;
+function triggerScan() {
+  const now = Date.now();
+  if (now - lastScanAt < 700) return;
+  lastScanAt = now;
 
-    lastScanAt = now;
+  showScan("scanning screen…");
 
-    showScan("scanning screen…");
+  if (scanTimeoutId) clearTimeout(scanTimeoutId);
+  scanTimeoutId = setTimeout(() => {
+    console.log("scan timed out (no response)");
+    hideScan();
+  }, 15000);
 
-    if (scanTimeoutId) clearTimeout(scanTimeoutId);
-    scanTimeoutId = setTimeout(() => {
-      console.log("scan timed out (no response)");
+  chrome.runtime.sendMessage({ type: "CAPTURE_SCREEN" }, (resp) => {
+    if (chrome.runtime.lastError) {
+      console.error("sendMessage error:", chrome.runtime.lastError.message);
       hideScan();
-    }, 15000);
-
-    chrome.runtime.sendMessage({ type: "CAPTURE_SCREEN" }, (resp) => {
-      if (chrome.runtime.lastError) {
-        console.error("sendMessage error:", chrome.runtime.lastError.message);
-        hideScan();
-        return;
-      }
-      if (resp?.ok === false) {
-        console.error("background error:", resp.error);
-        hideScan();
-      }
-    });
-  },
-  true
-);
-
-// ============================
-// triple click anywhere -> read text aloud
-// ============================
-(() => {
-  let clickCount = 0;
-  let clickTimer = null;
-  let lastTarget = null;
-
-  function pickTextFromEvent(e) {
-    const selected = window.getSelection?.().toString()?.trim();
-    if (selected) return selected;
-
-    let el = e?.target;
-    if (!el) return "";
-
-    const badTags = new Set(["SCRIPT", "STYLE", "NOSCRIPT"]);
-    if (el.tagName && badTags.has(el.tagName)) return "";
-
-    let text = "";
-    if (typeof el.innerText === "string") text = el.innerText.trim();
-    if (!text && typeof el.textContent === "string") text = el.textContent.trim();
-
-    let hops = 0;
-    while ((!text || text.length < 2) && el && hops < 3) {
-      el = el.parentElement;
-      if (!el) break;
-      if (el.tagName && badTags.has(el.tagName)) break;
-      if (typeof el.innerText === "string") text = el.innerText.trim();
-      hops++;
+      return;
     }
+    if (resp?.ok === false) {
+      console.error("background error:", resp.error);
+      hideScan();
+    }
+  });
+}
 
-    if (text.length > 1200) text = text.slice(0, 1200) + "…";
-    return text;
+function pickTextFromTarget(targetEl) {
+  const selected = window.getSelection?.().toString()?.trim();
+  if (selected) return selected;
+
+  let el = targetEl || document.activeElement || document.body;
+  if (!el) return "";
+
+  const badTags = new Set(["SCRIPT", "STYLE", "NOSCRIPT"]);
+  if (el.tagName && badTags.has(el.tagName)) return "";
+
+  let text = "";
+  if (typeof el.innerText === "string") text = el.innerText.trim();
+  if (!text && typeof el.textContent === "string") text = el.textContent.trim();
+
+  let hops = 0;
+  while ((!text || text.length < 2) && el && hops < 3) {
+    el = el.parentElement;
+    if (!el) break;
+    if (el.tagName && badTags.has(el.tagName)) break;
+    if (typeof el.innerText === "string") text = el.innerText.trim();
+    hops++;
   }
 
-  document.addEventListener(
-    "click",
-    (e) => {
-      if (lastTarget && e.target !== lastTarget) clickCount = 0;
-      lastTarget = e.target;
+  if (text.length > 1200) text = text.slice(0, 1200) + "…";
+  return text;
+}
 
-      clickCount += 1;
+function triggerReadText() {
+  const now = Date.now();
+  if (now - lastReadAt < 700) return;
+  lastReadAt = now;
 
-      // as soon as user hits 2 clicks, suppress dblclick scan
-      if (clickCount === 2) suppressScanUntil = Date.now() + 900;
-
-      if (clickTimer) clearTimeout(clickTimer);
-      clickTimer = setTimeout(() => {
-        clickCount = 0;
-        clickTimer = null;
-        lastTarget = null;
-      }, 450);
-
-      if (clickCount === 3) {
-        clickCount = 0;
-        if (clickTimer) clearTimeout(clickTimer);
-        clickTimer = null;
-
-        const text = pickTextFromEvent(e);
-        if (!text) return;
-
-        speakWithElevenLabs(text);
-      }
-    },
-    true
-  );
-})();
+  const text = pickTextFromTarget(srLastTargetEl);
+  if (!text) return;
+  speakWithElevenLabs(text);
+}
 
 // ============================
-// hover image + shift+i -> describe THAT image with blip -> speak
+// hover image + shift+d -> describe THAT image with blip -> speak
 // ============================
 let srHoveredImageEl = null;
 let srLastDescribeAt = 0;
@@ -395,6 +361,15 @@ document.addEventListener(
   (e) => {
     // store whatever element the mouse is currently over
     srHoveredImageEl = e?.target || null;
+    srLastTargetEl = e?.target || srLastTargetEl;
+  },
+  true
+);
+
+document.addEventListener(
+  "click",
+  (e) => {
+    srLastTargetEl = e?.target || srLastTargetEl;
   },
   true
 );
@@ -412,8 +387,20 @@ document.addEventListener(
 
     if (typing) return;
 
-    // shift+i (uppercase I or lowercase i)
-    if (!(e.shiftKey && (e.key === "I" || e.key === "i"))) return;
+    // shift+i -> scan screen
+    if (e.shiftKey && (e.key === "I" || e.key === "i")) {
+      triggerScan();
+      return;
+    }
+
+    // shift+r -> read nearby text
+    if (e.shiftKey && (e.key === "R" || e.key === "r")) {
+      triggerReadText();
+      return;
+    }
+
+    // shift+d -> describe hovered image
+    if (!(e.shiftKey && (e.key === "D" || e.key === "d"))) return;
 
     const now = Date.now();
     if (now - srLastDescribeAt < 800) return; // basic spam guard
