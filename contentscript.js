@@ -1,4 +1,4 @@
-// contentscript.js (option B: scan stops ONLY when results arrive + boxes drawn)
+// contentscript.js (option B + elevenlabs speak)
 
 console.log("screen_reader contentscript loaded");
 
@@ -60,7 +60,7 @@ function hideScan() {
 }
 
 // ============================
-// red boxes layer (with DPR fix)
+// red boxes layer (DPR fix)
 // ============================
 const DRAW_ID = "sr-draw-layer";
 const DRAW_STYLE_ID = "sr-draw-style";
@@ -117,7 +117,6 @@ function drawDetections(detections = []) {
     const box = det?.box;
     if (!box) continue;
 
-    // ✅ scale screenshot pixels -> css pixels
     const xmin = box.xmin / dpr;
     const ymin = box.ymin / dpr;
     const xmax = box.xmax / dpr;
@@ -145,6 +144,100 @@ function drawDetections(detections = []) {
 }
 
 // ============================
+// build a short sentence to speak
+// ============================
+function describeDetections(detections = []) {
+  const counts = new Map();
+
+  for (const det of detections) {
+    const score = det?.score ?? 0;
+    if (score < 0.3) continue;
+    const label = String(det?.label || "").trim();
+    if (!label) continue;
+    counts.set(label, (counts.get(label) || 0) + 1);
+  }
+
+  if (counts.size === 0) return "i don't see anything clearly.";
+
+  const parts = [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([label, n]) => `${n} ${n === 1 ? label : label + "s"}`);
+
+  return `on screen i detect ${parts.join(", ")}.`;
+}
+
+// ============================
+// ElevenLabs playback (with fallback if autoplay blocks)
+// ============================
+let srAudioEl = null;
+
+function ensureAudioEl() {
+  if (!srAudioEl) {
+    srAudioEl = document.createElement("audio");
+    srAudioEl.id = "sr-audio";
+    srAudioEl.style.display = "none";
+    document.documentElement.appendChild(srAudioEl);
+  }
+  return srAudioEl;
+}
+
+function showTapToPlay(src) {
+  // small clickable pill
+  const id = "sr-tap-play";
+  document.getElementById(id)?.remove();
+
+  const btn = document.createElement("button");
+  btn.id = id;
+  btn.textContent = "tap to play audio";
+  btn.style.cssText = `
+    position: fixed;
+    bottom: 18px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 2147483647;
+    padding: 12px 14px;
+    border-radius: 14px;
+    border: 0;
+    background: rgba(0,0,0,0.85);
+    color: white;
+    font: 800 14px system-ui;
+    cursor: pointer;
+  `;
+
+  btn.onclick = async () => {
+    btn.remove();
+    const a = ensureAudioEl();
+    a.src = src;
+    try { await a.play(); } catch (e) { console.error("play failed:", e); }
+  };
+
+  document.documentElement.appendChild(btn);
+  setTimeout(() => btn.remove(), 8000);
+}
+
+async function speakWithElevenLabs(text) {
+  const res = await chrome.runtime.sendMessage({ type: "SPEAK_TEXT", text });
+
+  if (!res?.ok) {
+    console.error("tts error:", res?.error);
+    return;
+  }
+
+  const src = `data:audio/mpeg;base64,${res.audioB64}`;
+  const a = ensureAudioEl();
+  a.src = src;
+
+  try {
+    await a.play();
+  } catch (e) {
+    // autoplay policy sometimes blocks if async; fallback button fixes it
+    console.warn("autoplay blocked, showing tap-to-play");
+    showTapToPlay(src);
+  }
+}
+
+// ============================
 // dblclick trigger (ONLY trigger)
 // ============================
 let lastScanAt = 0;
@@ -153,37 +246,35 @@ document.addEventListener(
   "dblclick",
   () => {
     const now = Date.now();
-    if (now - lastScanAt < 700) return; // prevent double-trigger
+    if (now - lastScanAt < 700) return;
     lastScanAt = now;
 
     showScan("scanning screen…");
 
-    // long failsafe ONLY if nothing ever returns (scan should normally stop on results)
+    // failsafe only if nothing returns
     if (scanTimeoutId) clearTimeout(scanTimeoutId);
     scanTimeoutId = setTimeout(() => {
       console.log("scan timed out (no response)");
       hideScan();
     }, 15000);
 
-    // IMPORTANT: do NOT hide scan here, only on results
     chrome.runtime.sendMessage({ type: "CAPTURE_SCREEN" }, (resp) => {
       if (chrome.runtime.lastError) {
         console.error("sendMessage error:", chrome.runtime.lastError.message);
         hideScan();
-        return;
       }
       if (resp?.ok === false) {
         console.error("background error:", resp.error);
         hideScan();
       }
-      // if resp.ok is true, we still wait for the DETR_RESULT message to stop scanning
     });
   },
   true
 );
 
 // ============================
-// stop scanning ONLY when results arrive (and draw boxes)
+// stop scanning ONLY when results arrive (option B)
+// draw boxes, then speak
 // ============================
 chrome.runtime.onMessage.addListener((msg) => {
   if (!msg?.type) return;
@@ -201,10 +292,11 @@ chrome.runtime.onMessage.addListener((msg) => {
 
   if (msg.type === "DETR_RESULT" || msg.type === "DETECTIONS_RESULT") {
     const detections = msg.detections || [];
-    drawDetections(detections); // ✅ boxes first
-    hideScan();                 // ✅ then stop scanning
-    return;
-  }
 
-  // if background sends HIDE_SCANNING, ignore it (option B wants scan to stop on results)
+    drawDetections(detections); // boxes first
+    hideScan();                 // scan stops once boxes appear
+
+    const sentence = describeDetections(detections);
+    speakWithElevenLabs(sentence); // then speak
+  }
 });

@@ -3,7 +3,7 @@
   "name": "screen_reader",
   "version": "0.0.1",
   "author": "Aleysa",
-  "description": "Screen Reader Assistant with object detection and visual scanning overlay.",
+  "description": "Screen Reader Assistant with object detection + scanning overlay + elevenlabs speech.",
 
   "action": {
     "default_popup": "popup.html",
@@ -24,14 +24,11 @@
     }
   ],
 
-  "permissions": [
-    "activeTab",
-    "scripting",
-    "tabs",
-    "storage"
-  ],
+  "permissions": ["activeTab", "scripting", "tabs", "storage"],
 
   "host_permissions": [
     "<all_urls>",
-"https://router.huggingface.co/*"  ]
+    "https://router.huggingface.co/*",
+    "https://api.elevenlabs.io/*"
+  ]
 }
