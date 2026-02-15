@@ -60,122 +60,13 @@ function hideScan() {
 }
 
 // ============================
-// red boxes layer (DPR fix)
-// ============================
-const DRAW_ID = "sr-draw-layer";
-const DRAW_STYLE_ID = "sr-draw-style";
-
-function ensureDrawLayer() {
-  if (!document.getElementById(DRAW_STYLE_ID)) {
-    const style = document.createElement("style");
-    style.id = DRAW_STYLE_ID;
-    style.textContent = `
-      #${DRAW_ID}{
-        position:fixed; inset:0;
-        z-index:2147483646;
-        pointer-events:none;
-      }
-      .sr-box{
-        position:absolute;
-        border:3px solid rgba(255,0,0,.95);
-        border-radius:6px;
-        box-sizing:border-box;
-      }
-      .sr-label{
-        position:absolute;
-        left:0; top:-24px;
-        padding:4px 8px;
-        border-radius:10px;
-        background:rgba(0,0,0,.75);
-        color:#fff;
-        font:800 12px system-ui;
-        white-space:nowrap;
-      }
-    `;
-    document.documentElement.appendChild(style);
-  }
-
-  let layer = document.getElementById(DRAW_ID);
-  if (!layer) {
-    layer = document.createElement("div");
-    layer.id = DRAW_ID;
-    document.documentElement.appendChild(layer);
-  }
-  return layer;
-}
-
-function drawDetections(detections = []) {
-  const layer = ensureDrawLayer();
-  layer.innerHTML = "";
-
-  const dpr = window.devicePixelRatio || 1;
-
-  for (const det of detections) {
-    const score = det?.score ?? 0;
-    if (score < 0.3) continue;
-
-    const box = det?.box;
-    if (!box) continue;
-
-    const xmin = box.xmin / dpr;
-    const ymin = box.ymin / dpr;
-    const xmax = box.xmax / dpr;
-    const ymax = box.ymax / dpr;
-
-    const el = document.createElement("div");
-    el.className = "sr-box";
-    el.style.left = `${xmin}px`;
-    el.style.top = `${ymin}px`;
-    el.style.width = `${Math.max(0, xmax - xmin)}px`;
-    el.style.height = `${Math.max(0, ymax - ymin)}px`;
-
-    const label = document.createElement("div");
-    label.className = "sr-label";
-    label.textContent = `${det.label} ${(score * 100).toFixed(0)}%`;
-
-    el.appendChild(label);
-    layer.appendChild(el);
-  }
-
-  setTimeout(() => {
-    const l = document.getElementById(DRAW_ID);
-    if (l) l.innerHTML = "";
-  }, 3500);
-}
-
-// ============================
-// build a short sentence to speak
-// ============================
-function describeDetections(detections = []) {
-  const counts = new Map();
-
-  for (const det of detections) {
-    const score = det?.score ?? 0;
-    if (score < 0.3) continue;
-    const label = String(det?.label || "").trim();
-    if (!label) continue;
-    counts.set(label, (counts.get(label) || 0) + 1);
-  }
-
-  if (counts.size === 0) return "i don't see anything clearly.";
-
-  const parts = [...counts.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 5)
-    .map(([label, n]) => `${n} ${n === 1 ? label : label + "s"}`);
-
-  return `on screen i detect ${parts.join(", ")}.`;
-}
-
-// ============================
-// ElevenLabs playback (with fallback if autoplay blocks)
+// ElevenLabs playback
 // ============================
 let srAudioEl = null;
 
 function ensureAudioEl() {
   if (!srAudioEl) {
     srAudioEl = document.createElement("audio");
-    srAudioEl.id = "sr-audio";
     srAudioEl.style.display = "none";
     document.documentElement.appendChild(srAudioEl);
   }
@@ -183,7 +74,6 @@ function ensureAudioEl() {
 }
 
 function showTapToPlay(src) {
-  // small clickable pill
   const id = "sr-tap-play";
   document.getElementById(id)?.remove();
 
@@ -209,7 +99,7 @@ function showTapToPlay(src) {
     btn.remove();
     const a = ensureAudioEl();
     a.src = src;
-    try { await a.play(); } catch (e) { console.error("play failed:", e); }
+    try { await a.play(); } catch (e) {}
   };
 
   document.documentElement.appendChild(btn);
@@ -218,11 +108,7 @@ function showTapToPlay(src) {
 
 async function speakWithElevenLabs(text) {
   const res = await chrome.runtime.sendMessage({ type: "SPEAK_TEXT", text });
-
-  if (!res?.ok) {
-    console.error("tts error:", res?.error);
-    return;
-  }
+  if (!res?.ok) return;
 
   const src = `data:audio/mpeg;base64,${res.audioB64}`;
   const a = ensureAudioEl();
@@ -230,28 +116,127 @@ async function speakWithElevenLabs(text) {
 
   try {
     await a.play();
-  } catch (e) {
-    // autoplay policy sometimes blocks if async; fallback button fixes it
-    console.warn("autoplay blocked, showing tap-to-play");
+  } catch {
     showTapToPlay(src);
   }
 }
 
 // ============================
-// dblclick trigger (ONLY trigger)
+// dblclick trigger (scan)
 // ============================
 let lastScanAt = 0;
+let suppressScanUntil = 0;
 
 document.addEventListener(
   "dblclick",
   () => {
     const now = Date.now();
+    if (now < suppressScanUntil) return;
     if (now - lastScanAt < 700) return;
     lastScanAt = now;
 
     showScan("scanning screen…");
 
-    // failsafe only if nothing returns
+    if (scanTimeoutId) clearTimeout(scanTimeoutId);
+    scanTimeoutId = setTimeout(() => {
+      hideScan();
+    }, 15000);
+
+    chrome.runtime.sendMessage({ type: "CAPTURE_SCREEN" });
+  },
+  true
+);
+
+// ============================
+// triple click = text only
+// ============================
+(() => {
+  let clickCount = 0;
+  let clickTimer = null;
+  let lastTarget = null;
+
+  function pickText(e) {
+    const selected = window.getSelection()?.toString()?.trim();
+    if (selected) return selected;
+
+    let el = e.target;
+    if (!el) return "";
+
+    let text = el.innerText?.trim() || el.textContent?.trim() || "";
+
+    if (text.length > 1200) text = text.slice(0, 1200) + "…";
+    return text;
+  }
+
+  document.addEventListener(
+    "click",
+    (e) => {
+      if (lastTarget && e.target !== lastTarget) clickCount = 0;
+      lastTarget = e.target;
+
+      clickCount++;
+
+      // 🔥 suppress scan as soon as second click happens
+      if (clickCount === 2) {
+        suppressScanUntil = Date.now() + 900;
+      }
+
+      if (clickTimer) clearTimeout(clickTimer);
+      clickTimer = setTimeout(() => {
+        clickCount = 0;
+        clickTimer = null;
+        lastTarget = null;
+      }, 450);
+
+      if (clickCount === 3) {
+        clickCount = 0;
+        if (clickTimer) clearTimeout(clickTimer);
+
+        const text = pickText(e);
+        if (!text) return;
+
+        speakWithElevenLabs(text);
+      }
+    },
+    true
+  );
+})();
+
+// ============================
+// listen for DETR results
+// ============================
+chrome.runtime.onMessage.addListener((msg) => {
+  if (!msg?.type) return;
+
+  if (msg.type === "SHOW_SCANNING") {
+    showScan(msg.message || "scanning…");
+    return;
+  }
+
+  if (msg.type === "ERROR") {
+    hideScan();
+    return;
+  }
+
+  if (msg.type === "DETR_RESULT" || msg.type === "DETECTIONS_RESULT") {
+    hideScan();
+    const sentence = describeDetections(msg.detections || []);
+    speakWithElevenLabs(sentence);
+  }
+  // ============================
+// shortcut triggers (messages from background.js)
+// ============================
+chrome.runtime.onMessage.addListener((msg) => {
+  if (!msg?.type) return;
+
+  if (msg.type === "TRIGGER_SCAN") {
+    const now = Date.now();
+    if (now < suppressScanUntil) return; // respect your triple-click suppression
+    if (now - lastScanAt < 700) return;
+    lastScanAt = now;
+
+    showScan("scanning screen…");
+
     if (scanTimeoutId) clearTimeout(scanTimeoutId);
     scanTimeoutId = setTimeout(() => {
       console.log("scan timed out (no response)");
@@ -268,35 +253,19 @@ document.addEventListener(
         hideScan();
       }
     });
-  },
-  true
-);
 
-// ============================
-// stop scanning ONLY when results arrive (option B)
-// draw boxes, then speak
-// ============================
-chrome.runtime.onMessage.addListener((msg) => {
-  if (!msg?.type) return;
-
-  if (msg.type === "SHOW_SCANNING") {
-    showScan(msg.message || "scanning…");
     return;
   }
 
-  if (msg.type === "ERROR") {
-    console.error("scan error:", msg.error);
-    hideScan();
+  if (msg.type === "TRIGGER_READ_SELECTION") {
+    const selected = window.getSelection?.().toString()?.trim();
+    if (!selected) {
+      console.warn("no text selected");
+      return;
+    }
+    speakWithElevenLabs(selected);
     return;
   }
+});
 
-  if (msg.type === "DETR_RESULT" || msg.type === "DETECTIONS_RESULT") {
-    const detections = msg.detections || [];
-
-    drawDetections(detections); // boxes first
-    hideScan();                 // scan stops once boxes appear
-
-    const sentence = describeDetections(detections);
-    speakWithElevenLabs(sentence); // then speak
-  }
 });

@@ -1,13 +1,13 @@
 {
   "manifest_version": 3,
-  "name": "screen_reader",
+  "name": "Vision Assist",
   "version": "0.0.1",
   "author": "Aleysa",
   "description": "Screen Reader Assistant with object detection + scanning overlay + elevenlabs speech.",
 
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Screen Reader Assistant"
+    "default_title": "Vision Assist"
     
   },
 
@@ -28,6 +28,23 @@
   ],
 
   "permissions": ["activeTab", "scripting", "tabs", "storage"],
+  "commands": {
+  "scan-screen": {
+    "suggested_key": {
+      "default": "Ctrl+Shift+S",
+      "mac": "Command+Shift+S"
+    },
+    "description": "Scan screen for objects (DETR) and speak results"
+  },
+  "read-selection": {
+    "suggested_key": {
+      "default": "Ctrl+Shift+R",
+      "mac": "Command+Shift+R"
+    },
+    "description": "Read selected text aloud"
+  }
+},
+
 
   "host_permissions": [
     "<all_urls>",
